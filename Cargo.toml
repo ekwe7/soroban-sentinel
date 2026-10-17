@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sentinel-core",
+    "crates/sentinel-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Soroban Sentinel Contributors"]
+license = "MIT"
+repository = "https://github.com/soroban-sentinel/soroban-sentinel"
+readme = "README.md"
+
+[workspace.dependencies]
+sentinel-core = { path = "crates/sentinel-core" }
+stellar-xdr = { version = "22.0.0", default-features = false, features = ["curr", "std"] }
+stellar-strkey = "0.0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "time"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+comfy-table = "7.1"
+async-trait = "0.1"
+thiserror = "1.0"
+wiremock = "0.6"
+assert_cmd = "2.0"
+predicates = "3.1"

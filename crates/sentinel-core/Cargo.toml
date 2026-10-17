@@ -1,0 +1,21 @@
+[package]
+name = "sentinel-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../README.md"
+description = "Core domain logic, RPC client, and risk engine for Soroban Sentinel"
+
+[dependencies]
+stellar-xdr.workspace = true
+stellar-strkey.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true

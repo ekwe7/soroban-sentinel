@@ -1,0 +1,25 @@
+[package]
+name = "sentinel-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../README.md"
+description = "Command-line interface for Soroban Sentinel"
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
+
+[dependencies]
+sentinel-core.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+comfy-table.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
