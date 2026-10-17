@@ -24,3 +24,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Internal development plans (local only)
+docs/MVP_EXECUTION_PLAN.md
+docs/BUILD_PLAN_5_DAYS.md
