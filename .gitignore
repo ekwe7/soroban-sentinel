@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target/
+target/
+**/*.rs.bk
+
+# Cargo
+Cargo.lock
+
+# Environment & Secrets
+.env
+*.env
+!.env.example
+
+# Log files
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE / Editor configuration
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
