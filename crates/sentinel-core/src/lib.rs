@@ -2,10 +2,15 @@
 //!
 //! Core domain entities, risk evaluation, and Soroban RPC client adapter.
 
+pub mod adapters;
 pub mod domain;
 pub mod error;
 pub mod ports;
 
+pub use adapters::{
+    derive_contract_code_key, derive_contract_instance_key, extract_wasm_hash_from_instance_entry,
+    parse_contract_id,
+};
 pub use domain::{
     calculate_remaining_ledgers, estimate_horizon_days, estimate_remaining_days,
     estimate_remaining_seconds, evaluate_risk, Durability, EntryType, RiskLevel, StorageEntry,
