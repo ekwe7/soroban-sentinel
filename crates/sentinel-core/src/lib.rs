@@ -4,6 +4,7 @@
 
 pub mod domain;
 pub mod error;
+pub mod ports;
 
 pub use domain::{
     calculate_remaining_ledgers, estimate_horizon_days, estimate_remaining_days,
@@ -12,3 +13,4 @@ pub use domain::{
     TARGET_LEDGER_CLOSE_SECONDS,
 };
 pub use error::{SentinelError, SentinelResult};
+pub use ports::{LatestLedgerInfo, LedgerReader, MockLedgerReader, RawLedgerEntry};
