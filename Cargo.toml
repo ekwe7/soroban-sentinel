@@ -15,7 +15,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 sentinel-core = { path = "crates/sentinel-core" }
-stellar-xdr = { version = "22.0.0", default-features = false, features = ["curr", "std"] }
+stellar-xdr = { version = "22.0.0", default-features = false, features = ["curr", "std", "base64"] }
 stellar-strkey = "0.0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "time"] }
