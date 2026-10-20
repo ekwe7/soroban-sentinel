@@ -178,3 +178,4 @@ Please read our [Contribution Plan](docs/OPEN_SOURCE_CONTRIBUTION_PLAN.md) and r
 ## 8. License
 
 `soroban-sentinel` is licensed under the [MIT License](LICENSE).
+
