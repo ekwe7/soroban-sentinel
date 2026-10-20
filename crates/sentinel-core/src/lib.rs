@@ -8,7 +8,8 @@ pub mod error;
 pub mod ports;
 
 pub use adapters::{
-    derive_contract_code_key, derive_contract_instance_key, extract_wasm_hash_from_instance_entry,
+    derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
+    derive_persistent_symbol_key, derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry,
     parse_contract_id,
 };
 pub use domain::{
