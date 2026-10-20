@@ -1,7 +1,5 @@
-mod args;
-
-use args::{Cli, Commands};
 use clap::Parser;
+use sentinel_cli::args::{Cli, Commands};
 
 #[tokio::main]
 async fn main() {

@@ -7,6 +7,10 @@ license.workspace = true
 readme = "../../README.md"
 description = "Command-line interface for Soroban Sentinel"
 
+[lib]
+name = "sentinel_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sentinel"
 path = "src/main.rs"
