@@ -4,4 +4,4 @@ pub mod args;
 pub mod formatters;
 
 pub use args::{Cli, Commands, ScanArgs};
-pub use formatters::render_text;
+pub use formatters::{render_json, render_text, JsonEntryReport, JsonSummary, JsonTTLReport};
