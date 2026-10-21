@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use clap::Parser;
 use sentinel_cli::args::{Cli, Commands};
 use sentinel_cli::commands::run_scan;

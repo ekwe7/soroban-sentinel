@@ -2,6 +2,8 @@
 //!
 //! Core domain entities, risk evaluation, and Soroban RPC client adapter.
 
+#![forbid(unsafe_code)]
+
 pub mod adapters;
 pub mod domain;
 pub mod error;
