@@ -16,38 +16,38 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Scan a contract and inspect storage entry TTL status and risk
+    /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
 }
 
-/// Arguments for the `scan` command
+/// Command-line arguments for the `sentinel scan` command.
 #[derive(Args, Debug, Clone)]
 pub struct ScanArgs {
-    /// Target Soroban smart contract address (e.g. C...)
+    /// Target Soroban smart contract address (C... Strkey format)
     #[arg(value_name = "CONTRACT_ID")]
     pub contract_id: String,
 
-    /// Custom Soroban RPC endpoint URL
+    /// Custom Soroban RPC endpoint URL (overrides default network endpoint)
     #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
     pub rpc_url: Option<String>,
 
-    /// Target Stellar network (defaults to "testnet")
+    /// Target Stellar network: "testnet", "mainnet", "futurenet", or "local"
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results (supports "text", "json")
+    /// Output format for scan results: "text" (colorized ASCII table) or "json" (machine-readable)
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
-    /// Persistent storage key symbol to monitor (can be specified multiple times)
+    /// Persistent storage key symbol to inspect (can be specified multiple times)
     #[arg(long = "key", value_name = "SYMBOL")]
     pub key: Vec<String>,
 
-    /// Persistent storage key in raw base64 XDR format (can be specified multiple times)
+    /// Persistent storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
     #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
     pub key_xdr: Vec<String>,
 
-    /// Warning threshold in ledgers (defaults to 120,960 ledgers ≈ 7 days)
+    /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
     #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
     pub threshold: u32,
 }

@@ -3,15 +3,15 @@
 > **Autonomous storage TTL monitoring, expiry-risk detection, and automated maintenance toolkit for Soroban smart contracts on the Stellar network.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status: Planning & Specification](https://img.shields.io/badge/Status-Specification%20Phase-orange.svg)](#project-status)
+[![Status: MVP Ready](https://img.shields.io/badge/Status-v0.1.0%20(MVP%20Ready)-brightgreen.svg)](#project-status)
 [![Architecture: Modular Monolith](https://img.shields.io/badge/Architecture-Modular%20Monolith%20(Hexagonal)-teal.svg)](docs/ARCHITECTURE_DECISION.md)
 [![Stellar Protocol](https://img.shields.io/badge/Stellar%20Protocol-20%20%7C%2021%20%7C%2022%20%7C%2023-purple.svg)](https://stellar.org)
 [![Ecosystem: Stellar Drips Wave](https://img.shields.io/badge/Ecosystem-Drips%20Wave%20Stellar-blueviolet.svg)](https://drips.network)
 
 ---
 
-> [!IMPORTANT]
-> **Specification Notice**: `soroban-sentinel` is currently in the **Project Validation and Specification Phase**. This repository contains complete architectural specifications, product requirements, and contribution plans. Core implementation is scheduled according to the [Implementation Roadmap](docs/IMPLEMENTATION_ROADMAP.md). **No application binary or crate is yet published.**
+> [!NOTE]
+> **MVP v0.1.0 Complete**: `soroban-sentinel` is implemented and verified across 71 offline unit/integration tests and live Soroban Testnet validation. The CLI binary `sentinel` supports deterministic contract scanning, persistent storage key verification, colorized ASCII reporting, and machine-readable JSON output.
 
 ---
 
@@ -86,10 +86,10 @@ The following table distinguishes between MVP release features and post-MVP road
 
 | Component | Feature | Protocol Level | Implementation Status | Tracking Reference |
 | :--- | :--- | :--- | :--- | :--- |
-| **CLI (MVP)** | Single Contract Scan (`sentinel scan <ID>`) | Protocol 20+ | **Planned (MVP - Sprint 2)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
-| **CLI (MVP)** | Terminal Table Output (`--format text`) | N/A | **Planned (MVP - Sprint 2)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
-| **CLI (MVP)** | Machine-Readable JSON Output (`--format json`) | N/A | **Planned (MVP - Sprint 2)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
-| **CLI (MVP)** | Explicit Persistent Key Verification (`--key`) | Protocol 20+ | **Planned (MVP - Sprint 2)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
+| **CLI (MVP)** | Single Contract Scan (`sentinel scan <ID>`) | Protocol 20+ | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
+| **CLI (MVP)** | Terminal Table Output (`--format text`) | N/A | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
+| **CLI (MVP)** | Machine-Readable JSON Output (`--format json`) | N/A | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
+| **CLI (MVP)** | Explicit Persistent Key Verification (`--key`, `--key-xdr`) | Protocol 20+ | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
 | **CLI** | Markdown Output (`--format markdown`) | N/A | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Rent Simulation (`sentinel forecast <ID>`) | Protocol 20+ | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Fleet Watch Mode (`sentinel watch --config`) | Protocol 20+ | **Planned (Sprint 4)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-4) |
@@ -108,45 +108,93 @@ A critical technical constraint in Soroban is that **Soroban RPC (`getLedgerEntr
 To operate soundly without making unsupported protocol assumptions:
 1. **Zero-Configuration Scope (MVP)**: Given only a Contract ID (`C...`), `soroban-sentinel` deterministically inspects:
    - The **Contract Instance Ledger Entry** (`SCVal::LedgerKeyContractInstance`).
-   - All key-values stored inside the **Contract Instance Storage Map** (`ContractDataEntry.val.instance.storage`).
-   - The **Contract Code WASM Entry** referenced by the contract instance executable hash.
-2. **Explicit Persistent Keys**: Because persistent entries (`ContractDataDurability::Persistent`) live as isolated ledger keys, developers query them via `--key <SYMBOL>` or `--key-xdr <BASE64>`, or declare them in `sentinel.toml` during watch mode.
+   - The **Contract Code WASM Entry** referenced by the contract instance executable hash (or detects built-in Stellar asset contracts).
+2. **Explicit Persistent Keys**: Because persistent entries (`ContractDataDurability::Persistent`) live as isolated ledger keys, operators query them via `--key <SYMBOL>` or `--key-xdr <BASE64>`.
 
 ---
 
-## 5. Planned Usage Examples (Design Preview)
+## 5. Usage Guide & Output Examples
 
-### Scanning a Contract's Instance & Code TTL (MVP)
+### Quickstart: Building from Source
 ```bash
-# Inspect the Contract Instance, internal instance storage, and WASM binary
-sentinel scan CA3D5NX... --network testnet
+# Clone and build release binary
+git clone https://github.com/soroban-sentinel/soroban-sentinel.git
+cd soroban-sentinel
+cargo build --release -p sentinel-cli
+
+# Run scan using compiled binary
+./target/release/sentinel scan --help
 ```
 
-*Example Planned Terminal Output:*
-```
-+----------------------------------------------------------------------------------------------------+
-| Target: CA3D5NX... | Network: testnet | Current Ledger: 5,420,100                                  |
-+----------------------+------------+------------------+-------------------+-------------------------+
-| Entry Type           | Durability | Byte Size        | Live Until Ledger | Remaining Horizon       |
-+----------------------+------------+------------------+-------------------+-------------------------+
-| Contract Instance    | Instance   | 342 B            | 5,530,100         | 110,000 ledgers (~6.3 d)|
-| Contract Code (WASM) | Code       | 18,450 B         | 5,530,100         | 110,000 ledgers (~6.3 d)|
-| Instance Storage [0] | Instance   | (in instance)    | 5,530,100         | 110,000 ledgers (~6.3 d)|
-+----------------------+------------+------------------+-------------------+-------------------------+
-Status: WARN (TTL drops below 7-day safety threshold in ~6.3 days)
-```
-
-### Emitting Machine-Readable JSON for CI/CD (MVP)
+### Scanning a Contract (Default Terminal Table)
 ```bash
-sentinel scan CA3D5NX... --format json --network testnet
+# Inspect contract instance, WASM bytecode, and persistent storage keys
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --network testnet \
+  --key ADMIN \
+  --key COUNTER
 ```
 
-### Simulating TTL Extension Rent Cost (Post-MVP)
+*Actual Terminal Output:*
+```text
+Contract: CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC | Network: testnet | Latest Ledger: 5,303,220 (Velocity: 5.0s/ledger)
++-----------------------+------------+------------+-------------------+----------------------+--------+
+| Entry Description     | Durability | Size Bytes | Live Until Ledger | Remaining Horizon    | Status |
++=====================================================================================================+
+| Contract Instance     | Instance   | 240 B      | 8,305,943         | 3,002,723 (~173.8 d) | OK     |
+| Persistent Key: ADMIN | Persistent | 64 B       | 8,305,943         | 3,002,723 (~173.8 d) | OK     |
+| Persistent Key: COUNTER| Persistent | 48 B       | 8,305,943         | 3,002,723 (~173.8 d) | OK     |
++-----------------------+------------+------------+-------------------+----------------------+--------+
+Summary: 3 entries checked. 3 OK, 0 WARN, 0 CRITICAL/ARCHIVED.
+```
+
+### Emitting Machine-Readable JSON (CI/CD Pipelines)
 ```bash
-sentinel forecast CA3D5NX... --extend-by 200000 --network testnet
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --network testnet \
+  --format json
 ```
 
----
+*Output:*
+```json
+{
+  "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "network": "testnet",
+  "latest_ledger": 5303220,
+  "ledger_velocity_seconds": 5.0,
+  "summary": {
+    "total_entries": 1,
+    "ok": 1,
+    "warn": 0,
+    "critical": 0,
+    "archived": 0
+  },
+  "entries": [
+    {
+      "identifier": "instance",
+      "entry_type": "contract_instance",
+      "durability": "instance",
+      "size_bytes": 240,
+      "live_until_ledger": 8305943,
+      "remaining_ledgers": 3002723,
+      "estimated_remaining_seconds": 15013615.0,
+      "estimated_remaining_days": 173.77,
+      "status": "ok"
+    }
+  ]
+}
+```
+
+### Standard Process Exit Codes
+`sentinel` sets standard UNIX exit codes suitable for CI/CD gates and automation:
+
+| Exit Code | Meaning | Condition |
+| :---: | :--- | :--- |
+| `0` | **Success / OK** | All evaluated storage entries have `status == OK` |
+| `1` | **Warning** | One or more evaluated storage entries have `status == WARN` |
+| `2` | **Critical / Archived** | One or more evaluated entries have `status == CRITICAL` or `ARCHIVED` |
+| `10` | **Invalid Arguments** | Malformed contract Strkey, unrecognized network, or invalid parameters |
+| `11` | **RPC Failure** | Network timeout, connection refused, or HTTP 5xx/4xx RPC communication failure |
 
 ## 6. Repository Documentation Suite
 
