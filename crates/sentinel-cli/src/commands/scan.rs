@@ -1,6 +1,6 @@
 //! Execution logic for the `sentinel scan` CLI command.
 
-use sentinel_core::adapters::SorobanRpcClient;
+use sentinel_core::adapters::{validate_rpc_url, SorobanRpcClient};
 use sentinel_core::domain::{RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS};
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{ScanContractUseCase, ScanRequest};
@@ -22,6 +22,7 @@ pub const EXIT_RPC_FAILURE: i32 = 11;
 /// Resolves the appropriate RPC endpoint URL from network preset or command override.
 pub fn resolve_rpc_url(network: &str, rpc_url_override: Option<&str>) -> Result<String, String> {
     if let Some(url) = rpc_url_override {
+        validate_rpc_url(url).map_err(|e| e.to_string())?;
         return Ok(url.to_string());
     }
 
@@ -37,6 +38,34 @@ pub fn resolve_rpc_url(network: &str, rpc_url_override: Option<&str>) -> Result<
     }
 }
 
+/// Resolves and validates a sound threshold configuration.
+///
+/// If `critical_threshold_opt` is not explicitly provided:
+/// - If `warning_threshold > DEFAULT_CRITICAL_LEDGERS`, uses `DEFAULT_CRITICAL_LEDGERS`.
+/// - If `warning_threshold <= DEFAULT_CRITICAL_LEDGERS`, dynamically scales critical threshold
+///   to `std::cmp::max(1, warning_threshold / 3)` so warning state is never bypassed.
+pub fn resolve_threshold_config(
+    warning_threshold: u32,
+    critical_threshold_opt: Option<u32>,
+) -> Result<ThresholdConfig, String> {
+    if warning_threshold == 0 {
+        return Err("Warning threshold must be greater than 0".to_string());
+    }
+
+    let critical_ledgers = match critical_threshold_opt {
+        Some(crit) => crit,
+        None => {
+            if warning_threshold <= DEFAULT_CRITICAL_LEDGERS {
+                std::cmp::max(1, warning_threshold / 3)
+            } else {
+                DEFAULT_CRITICAL_LEDGERS
+            }
+        }
+    };
+
+    ThresholdConfig::try_new(warning_threshold, critical_ledgers).map_err(|e| e.to_string())
+}
+
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
 pub async fn run_scan(args: ScanArgs) -> i32 {
     let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
@@ -47,13 +76,16 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         }
     };
 
+    let threshold_config = match resolve_threshold_config(args.threshold, args.critical_threshold) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            return EXIT_INVALID_ARGS;
+        }
+    };
+
     let rpc_client = SorobanRpcClient::new(rpc_url);
     let usecase = ScanContractUseCase::new(rpc_client);
-
-    let threshold_config = ThresholdConfig {
-        warning_ledgers: args.threshold,
-        critical_ledgers: DEFAULT_CRITICAL_LEDGERS,
-    };
 
     let request = ScanRequest::new(&args.contract_id)
         .with_network(&args.network)
@@ -66,9 +98,10 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         Err(err) => {
             eprintln!("Error: {}", err);
             return match err {
-                SentinelError::InvalidContractAddress(_) | SentinelError::InvalidXdrKey(_) => {
-                    EXIT_INVALID_ARGS
-                }
+                SentinelError::InvalidContractAddress(_)
+                | SentinelError::InvalidXdrKey(_)
+                | SentinelError::InvalidThresholdConfig(_)
+                | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
                 SentinelError::RpcConnectionTimeout(_) | SentinelError::RpcResponseError { .. } => {
                     EXIT_RPC_FAILURE
                 }
@@ -140,5 +173,32 @@ mod tests {
     #[test]
     fn test_resolve_rpc_url_unknown_network() {
         assert!(resolve_rpc_url("unknown_net", None).is_err());
+    }
+
+    #[test]
+    fn test_resolve_threshold_config_behavior() {
+        // 1. Defaults: warning > DEFAULT_CRITICAL_LEDGERS
+        let cfg = resolve_threshold_config(120960, None).unwrap();
+        assert_eq!(cfg.warning_ledgers, 120960);
+        assert_eq!(cfg.critical_ledgers, DEFAULT_CRITICAL_LEDGERS);
+
+        // 2. Custom warning <= DEFAULT_CRITICAL_LEDGERS scales critical to 1/3 (preventing bypass)
+        let cfg = resolve_threshold_config(10000, None).unwrap();
+        assert_eq!(cfg.warning_ledgers, 10000);
+        assert_eq!(cfg.critical_ledgers, 3333);
+        assert!(cfg.critical_ledgers < cfg.warning_ledgers);
+
+        // 3. Custom warning and explicit critical
+        let cfg = resolve_threshold_config(50000, Some(10000)).unwrap();
+        assert_eq!(cfg.warning_ledgers, 50000);
+        assert_eq!(cfg.critical_ledgers, 10000);
+
+        // 4. Contradictory: critical >= warning returns error
+        assert!(resolve_threshold_config(50000, Some(50000)).is_err());
+        assert!(resolve_threshold_config(50000, Some(60000)).is_err());
+
+        // 5. Invalid: warning == 0 or critical == 0
+        assert!(resolve_threshold_config(0, None).is_err());
+        assert!(resolve_threshold_config(100, Some(0)).is_err());
     }
 }

@@ -1,11 +1,12 @@
 //! Use case orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 
 use serde::{Deserialize, Serialize};
-use stellar_xdr::curr::{Limits, ReadXdr, WriteXdr};
+use stellar_xdr::curr::{ReadXdr, WriteXdr};
 
 use crate::adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_symbol_key,
     derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry, parse_contract_id,
+    safe_xdr_limits,
 };
 use crate::domain::{
     calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds,
@@ -204,16 +205,16 @@ pub fn compute_overall_status(entries: &[StorageEntryReport]) -> RiskLevel {
 /// Safely computes the binary byte size from base64 XDR string.
 fn compute_byte_size(entry_xdr_base64: &str) -> usize {
     if let Ok(entry) =
-        stellar_xdr::curr::LedgerEntry::from_xdr_base64(entry_xdr_base64, Limits::none())
+        stellar_xdr::curr::LedgerEntry::from_xdr_base64(entry_xdr_base64, safe_xdr_limits())
     {
-        if let Ok(bytes) = entry.to_xdr(Limits::none()) {
+        if let Ok(bytes) = entry.to_xdr(safe_xdr_limits()) {
             return bytes.len();
         }
     }
     if let Ok(data) =
-        stellar_xdr::curr::LedgerEntryData::from_xdr_base64(entry_xdr_base64, Limits::none())
+        stellar_xdr::curr::LedgerEntryData::from_xdr_base64(entry_xdr_base64, safe_xdr_limits())
     {
-        if let Ok(bytes) = data.to_xdr(Limits::none()) {
+        if let Ok(bytes) = data.to_xdr(safe_xdr_limits()) {
             return bytes.len();
         }
     }
@@ -250,6 +251,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
     /// Executes the full contract scan workflow.
     pub async fn execute(&self, request: ScanRequest) -> SentinelResult<TTLReport> {
         let contract_id_bytes = parse_contract_id(&request.contract_id_strkey)?;
+        request.threshold_config.validate()?;
         let latest_ledger_info = self.reader.get_latest_ledger().await?;
         let latest_ledger = latest_ledger_info.sequence;
 
@@ -432,8 +434,8 @@ mod tests {
     use super::*;
     use stellar_xdr::curr::{
         ContractCodeEntry, ContractCodeEntryExt, ContractDataDurability, ContractDataEntry,
-        ContractExecutable, ExtensionPoint, Hash, LedgerEntryData, ScAddress, ScContractInstance,
-        ScSymbol, ScVal,
+        ContractExecutable, ExtensionPoint, Hash, LedgerEntryData, Limits, ScAddress,
+        ScContractInstance, ScSymbol, ScVal,
     };
 
     use crate::ports::mock::MockLedgerReader;

@@ -367,3 +367,47 @@ fn test_edge_case_invalid_base64_xdr_key_rejected() {
         other => panic!("Expected InvalidXdrKey, got: {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// 8. Contradictory & Low Threshold Edge Cases
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_edge_case_contradictory_threshold_rejected_in_usecase() {
+    let mock_reader = MockLedgerReader::new();
+    let usecase = ScanContractUseCase::new(mock_reader);
+
+    let contract_id = [18u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+
+    // Critical threshold > warning threshold (contradictory)
+    let contradictory_config = ThresholdConfig::new(50_000, 100_000);
+    let request = ScanRequest::new(&contract_strkey).with_threshold_config(contradictory_config);
+
+    let result = usecase.execute(request).await;
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        SentinelError::InvalidThresholdConfig(msg) => {
+            assert!(msg.contains("strictly less than"));
+        }
+        other => panic!("Expected InvalidThresholdConfig, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_edge_case_scaled_low_threshold_preserves_warn_state() {
+    // When warning threshold is low (e.g. 10,000), critical is scaled (e.g. 3,333)
+    let low_config = ThresholdConfig::try_new(10_000, 3_333).unwrap();
+
+    // 0 -> Archived
+    assert_eq!(evaluate_risk(0, &low_config), RiskLevel::Archived);
+    // 2,000 -> Critical (< 3,333)
+    assert_eq!(evaluate_risk(2_000, &low_config), RiskLevel::Critical);
+    // 3,333 -> Warn (>= 3,333 and < 10,000)
+    assert_eq!(evaluate_risk(3_333, &low_config), RiskLevel::Warn);
+    // 5,000 -> Warn
+    assert_eq!(evaluate_risk(5_000, &low_config), RiskLevel::Warn);
+    // 10,000 -> Ok (>= 10,000)
+    assert_eq!(evaluate_risk(10_000, &low_config), RiskLevel::Ok);
+    // 15,000 -> Ok
+    assert_eq!(evaluate_risk(15_000, &low_config), RiskLevel::Ok);
+}

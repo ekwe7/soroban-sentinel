@@ -34,6 +34,22 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Maximum allowed RPC response body size in bytes (10 MB) to prevent unbounded memory exhaustion.
+pub const MAX_RPC_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Validates that an RPC URL is syntactically valid and uses the http or https scheme.
+pub fn validate_rpc_url(url: &str) -> SentinelResult<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| SentinelError::InvalidRpcUrl(format!("'{}': {}", url, e)))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(SentinelError::InvalidRpcUrl(format!(
+            "Unsupported scheme '{}'. Only 'http' and 'https' are supported.",
+            parsed.scheme()
+        )));
+    }
+    Ok(())
+}
+
 /// JSON-RPC 2.0 client for interacting with Soroban RPC nodes.
 #[derive(Debug, Clone)]
 pub struct SorobanRpcClient {
@@ -43,12 +59,13 @@ pub struct SorobanRpcClient {
 }
 
 impl SorobanRpcClient {
-    /// Create a new `SorobanRpcClient` with default timeout (10 seconds) and standard retry policy.
+    /// Create a new `SorobanRpcClient` with default timeout (10 seconds), 3-hop redirect limit, and standard retry policy.
     pub fn new(rpc_url: impl Into<String>) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::limited(3))
             .build()
-            .expect("Failed to initialize reqwest HTTP client");
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             rpc_url: rpc_url.into(),
@@ -128,12 +145,37 @@ impl SorobanRpcClient {
                         });
                     }
 
-                    let rpc_response: JsonRpcResponse<R> = response.json().await.map_err(|e| {
-                        SentinelError::SerializationError(format!(
-                            "Failed to parse JSON-RPC response: {}",
-                            e
-                        ))
-                    })?;
+                    // Enforce streaming body size limit to prevent memory exhaustion
+                    let mut body_bytes = Vec::new();
+                    let mut response = response;
+                    while let Some(chunk) =
+                        response
+                            .chunk()
+                            .await
+                            .map_err(|e| SentinelError::RpcResponseError {
+                                code: -32603,
+                                message: format!("Error reading response stream: {}", e),
+                            })?
+                    {
+                        if body_bytes.len().saturating_add(chunk.len()) > MAX_RPC_RESPONSE_BYTES {
+                            return Err(SentinelError::RpcResponseError {
+                                code: -32600,
+                                message: format!(
+                                    "RPC response exceeded maximum allowed size limit of {} bytes",
+                                    MAX_RPC_RESPONSE_BYTES
+                                ),
+                            });
+                        }
+                        body_bytes.extend_from_slice(&chunk);
+                    }
+
+                    let rpc_response: JsonRpcResponse<R> = serde_json::from_slice(&body_bytes)
+                        .map_err(|e| {
+                            SentinelError::SerializationError(format!(
+                                "Failed to parse JSON-RPC response: {}",
+                                e
+                            ))
+                        })?;
 
                     if let Some(error) = rpc_response.error {
                         return Err(SentinelError::RpcResponseError {
@@ -446,6 +488,59 @@ mod tests {
         assert!(matches!(
             res,
             Err(SentinelError::RpcResponseError { code: -32601, .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_rpc_url_schemes() {
+        // Valid http and https
+        assert!(validate_rpc_url("https://soroban-testnet.stellar.org").is_ok());
+        assert!(validate_rpc_url("http://localhost:8000/soroban/rpc").is_ok());
+
+        // Invalid schemes rejected
+        let err = validate_rpc_url("file:///etc/passwd").unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidRpcUrl(_)));
+
+        let err = validate_rpc_url("ftp://ftp.example.com").unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidRpcUrl(_)));
+
+        // Malformed URL rejected
+        let err = validate_rpc_url("not_a_valid_url").unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidRpcUrl(_)));
+    }
+
+    #[tokio::test]
+    async fn test_wiremock_malformed_json_response() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("THIS IS NOT JSON"))
+            .mount(&mock_server)
+            .await;
+
+        let client = SorobanRpcClient::new(mock_server.uri());
+        let res = client.get_latest_ledger().await;
+
+        assert!(matches!(res, Err(SentinelError::SerializationError(_))));
+    }
+
+    #[tokio::test]
+    async fn test_wiremock_http_error_status() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let client = SorobanRpcClient::new(mock_server.uri());
+        let res = client.get_latest_ledger().await;
+
+        assert!(matches!(
+            res,
+            Err(SentinelError::RpcResponseError { code: 500, .. })
         ));
     }
 }

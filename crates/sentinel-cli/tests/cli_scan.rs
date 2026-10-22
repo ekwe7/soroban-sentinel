@@ -231,3 +231,38 @@ fn test_cli_scan_unreachable_rpc_returns_exit_code_11() {
         .code(11)
         .stderr(predicate::str::contains("Error"));
 }
+
+// Test F: Invalid RPC URL scheme -> asserts stderr error message and exit code 10
+#[test]
+fn test_cli_scan_invalid_rpc_scheme_returns_exit_code_10() {
+    let contract_id = [5u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args(["scan", &contract_strkey, "--rpc-url", "file:///etc/passwd"]);
+
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("Unsupported scheme"));
+}
+
+// Test G: Contradictory threshold arguments -> asserts exit code 10
+#[test]
+fn test_cli_scan_contradictory_thresholds_returns_exit_code_10() {
+    let contract_id = [6u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        &contract_strkey,
+        "--threshold",
+        "10000",
+        "--critical-threshold",
+        "20000",
+    ]);
+
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("strictly less than"));
+}

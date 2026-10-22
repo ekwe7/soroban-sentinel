@@ -50,6 +50,10 @@ pub struct ScanArgs {
     /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
     #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
     pub threshold: u32,
+
+    /// Critical threshold in ledgers below which entries trigger CRITICAL status (defaults to 34,560 ledgers ≈ 2 days, or threshold / 3 if threshold <= 34,560)
+    #[arg(long, value_name = "LEDGERS")]
+    pub critical_threshold: Option<u32>,
 }
 
 #[cfg(test)]
