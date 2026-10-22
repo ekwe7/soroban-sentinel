@@ -266,3 +266,125 @@ fn test_cli_scan_contradictory_thresholds_returns_exit_code_10() {
         .code(10)
         .stderr(predicate::str::contains("strictly less than"));
 }
+
+// Test H: Malformed JSON from RPC endpoint -> asserts exit code 11 (EXIT_RPC_FAILURE)
+#[tokio::test]
+async fn test_cli_scan_malformed_rpc_json_returns_exit_code_11() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [7u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("THIS IS NOT JSON"))
+        .mount(&mock_server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        &contract_strkey,
+        "--rpc-url",
+        &mock_server.uri(),
+        "--format",
+        "json",
+    ]);
+
+    cmd.assert()
+        .code(11)
+        .stderr(predicate::str::contains(
+            "Failed to parse JSON-RPC response",
+        ))
+        .stdout(predicate::str::is_empty());
+}
+
+// Test I: Missing required CONTRACT_ID -> asserts exit code 10 (EXIT_INVALID_ARGS)
+#[test]
+fn test_cli_scan_missing_contract_id_returns_exit_code_10() {
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args(["scan"]);
+
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("<CONTRACT_ID>"));
+}
+
+// Test J: CLI help and version flags continue to exit 0
+#[test]
+fn test_cli_help_and_version_flags_return_exit_code_0() {
+    // Root --help
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.arg("--help");
+    cmd.assert()
+        .code(0)
+        .stdout(predicate::str::contains("Usage:"));
+
+    // Root --version
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.arg("--version");
+    cmd.assert()
+        .code(0)
+        .stdout(predicate::str::contains("sentinel"));
+
+    // Subcommand scan --help
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args(["scan", "--help"]);
+    cmd.assert()
+        .code(0)
+        .stdout(predicate::str::contains("<CONTRACT_ID>"));
+}
+
+// Test K: Critical risk entries -> asserts exit code 2 (EXIT_CRITICAL_OR_ARCHIVED)
+#[tokio::test]
+async fn test_cli_scan_critical_entries_returns_exit_code_2() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [8u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let instance_key = derive_contract_instance_key(&contract_id).unwrap();
+    let instance_xdr = make_instance_xdr(contract_id);
+
+    // Live until 5,410,000 -> 10,000 ledgers remaining (< 34,560) -> CRITICAL
+    let live_until = 5_410_000;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["method"].as_str().unwrap() {
+                "getLatestLedger" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "sequence": 5_400_000,
+                        "protocolVersion": 22
+                    }
+                })),
+                "getLedgerEntries" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "latestLedger": 5_400_000,
+                        "entries": [{
+                            "key": instance_key,
+                            "xdr": instance_xdr,
+                            "liveUntilLedgerSeq": live_until,
+                            "lastModifiedLedgerSeq": 5_390_000
+                        }]
+                    }
+                })),
+                other => panic!("Unexpected method: {}", other),
+            }
+        })
+        .mount(&mock_server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args(["scan", &contract_strkey, "--rpc-url", &mock_server.uri()]);
+
+    cmd.assert()
+        .code(2)
+        .stdout(predicate::str::contains("CRITICAL"))
+        .stdout(predicate::str::contains(
+            "Summary: 1 entries checked. 0 OK, 0 WARN, 1 CRITICAL/ARCHIVED.",
+        ));
+}
