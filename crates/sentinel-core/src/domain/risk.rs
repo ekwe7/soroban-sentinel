@@ -1,5 +1,6 @@
 //! Risk classification engine and threshold rules for Soroban storage entries.
 
+use crate::error::{SentinelError, SentinelResult};
 use serde::{Deserialize, Serialize};
 
 /// Default warning threshold: 120,960 ledgers (~7 days at 5 seconds per ledger).
@@ -43,12 +44,48 @@ pub struct ThresholdConfig {
 }
 
 impl ThresholdConfig {
-    /// Constructs a new `ThresholdConfig`.
+    /// Constructs a new `ThresholdConfig` without validation (for backwards compatibility).
     pub fn new(warning_ledgers: u32, critical_ledgers: u32) -> Self {
         Self {
             warning_ledgers,
             critical_ledgers,
         }
+    }
+
+    /// Constructs and validates a new `ThresholdConfig`.
+    pub fn try_new(warning_ledgers: u32, critical_ledgers: u32) -> SentinelResult<Self> {
+        let config = Self {
+            warning_ledgers,
+            critical_ledgers,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validates that thresholds are logically sound and non-contradictory.
+    ///
+    /// Requirements:
+    /// - `warning_ledgers > 0`
+    /// - `critical_ledgers > 0`
+    /// - `critical_ledgers < warning_ledgers`
+    pub fn validate(&self) -> SentinelResult<()> {
+        if self.warning_ledgers == 0 {
+            return Err(SentinelError::InvalidThresholdConfig(
+                "Warning threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.critical_ledgers == 0 {
+            return Err(SentinelError::InvalidThresholdConfig(
+                "Critical threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.critical_ledgers >= self.warning_ledgers {
+            return Err(SentinelError::InvalidThresholdConfig(format!(
+                "Critical threshold ({}) must be strictly less than warning threshold ({})",
+                self.critical_ledgers, self.warning_ledgers
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -63,17 +100,19 @@ impl Default for ThresholdConfig {
 
 /// Evaluates remaining ledgers against a `ThresholdConfig` to determine risk classification.
 ///
+/// Uses direct 64-bit integer comparison to eliminate lossy truncation or integer overflow.
+///
 /// # Rules:
 /// - If `remaining_ledgers <= 0` -> `RiskLevel::Archived`
-/// - If `remaining_ledgers < config.critical_ledgers` -> `RiskLevel::Critical`
-/// - If `remaining_ledgers < config.warning_ledgers` -> `RiskLevel::Warn`
+/// - If `remaining_ledgers < config.critical_ledgers as i64` -> `RiskLevel::Critical`
+/// - If `remaining_ledgers < config.warning_ledgers as i64` -> `RiskLevel::Warn`
 /// - Otherwise -> `RiskLevel::Ok`
 pub fn evaluate_risk(remaining_ledgers: i64, config: &ThresholdConfig) -> RiskLevel {
     if remaining_ledgers <= 0 {
         RiskLevel::Archived
-    } else if (remaining_ledgers as u32) < config.critical_ledgers {
+    } else if remaining_ledgers < config.critical_ledgers as i64 {
         RiskLevel::Critical
-    } else if (remaining_ledgers as u32) < config.warning_ledgers {
+    } else if remaining_ledgers < config.warning_ledgers as i64 {
         RiskLevel::Warn
     } else {
         RiskLevel::Ok
@@ -129,6 +168,40 @@ mod tests {
         assert_eq!(evaluate_risk(99, &custom), RiskLevel::Warn);
         assert_eq!(evaluate_risk(100, &custom), RiskLevel::Ok);
         assert_eq!(evaluate_risk(101, &custom), RiskLevel::Ok);
+    }
+
+    #[test]
+    fn test_threshold_validation_valid_and_invalid() {
+        // Valid
+        assert!(ThresholdConfig::try_new(100, 50).is_ok());
+        assert!(ThresholdConfig::default().validate().is_ok());
+
+        // Contradictory: critical == warning
+        let err = ThresholdConfig::try_new(100, 100).unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidThresholdConfig(_)));
+
+        // Contradictory: critical > warning
+        let err = ThresholdConfig::try_new(50, 100).unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidThresholdConfig(_)));
+
+        // Invalid: warning is 0
+        let err = ThresholdConfig::try_new(0, 50).unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidThresholdConfig(_)));
+
+        // Invalid: critical is 0
+        let err = ThresholdConfig::try_new(100, 0).unwrap_err();
+        assert!(matches!(err, SentinelError::InvalidThresholdConfig(_)));
+    }
+
+    #[test]
+    fn test_risk_evaluation_64bit_no_truncation() {
+        let config = ThresholdConfig::default();
+        // Values exceeding u32::MAX (4,294,967,295)
+        let huge_value: i64 = 5_000_000_000;
+        assert_eq!(evaluate_risk(huge_value, &config), RiskLevel::Ok);
+
+        let i64_max = i64::MAX;
+        assert_eq!(evaluate_risk(i64_max, &config), RiskLevel::Ok);
     }
 
     #[test]

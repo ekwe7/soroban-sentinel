@@ -9,6 +9,7 @@ pub enum Durability {
     Instance,
     Persistent,
     Temporary,
+    Code,
 }
 
 impl std::fmt::Display for Durability {
@@ -17,6 +18,7 @@ impl std::fmt::Display for Durability {
             Self::Instance => write!(f, "Instance"),
             Self::Persistent => write!(f, "Persistent"),
             Self::Temporary => write!(f, "Temporary"),
+            Self::Code => write!(f, "Code"),
         }
     }
 }
@@ -130,6 +132,7 @@ mod tests {
         assert_eq!(Durability::Instance.to_string(), "Instance");
         assert_eq!(Durability::Persistent.to_string(), "Persistent");
         assert_eq!(Durability::Temporary.to_string(), "Temporary");
+        assert_eq!(Durability::Code.to_string(), "Code");
     }
 
     #[test]

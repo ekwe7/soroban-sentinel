@@ -3,8 +3,8 @@
 target/
 **/*.rs.bk
 
-# Cargo
-Cargo.lock
+# Cargo (Cargo.lock is tracked for reproducible application binary releases)
+# (do not ignore Cargo.lock)
 
 # Environment & Secrets
 .env

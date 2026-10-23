@@ -2,10 +2,13 @@
 //!
 //! Core domain entities, risk evaluation, and Soroban RPC client adapter.
 
+#![forbid(unsafe_code)]
+
 pub mod adapters;
 pub mod domain;
 pub mod error;
 pub mod ports;
+pub mod usecases;
 
 pub use adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
@@ -21,3 +24,7 @@ pub use domain::{
 };
 pub use error::{SentinelError, SentinelResult};
 pub use ports::{LatestLedgerInfo, LedgerReader, MockLedgerReader, RawLedgerEntry};
+pub use usecases::{
+    compute_overall_status, ReportSummary, ScanContractUseCase, ScanRequest, StorageEntryReport,
+    TTLReport,
+};

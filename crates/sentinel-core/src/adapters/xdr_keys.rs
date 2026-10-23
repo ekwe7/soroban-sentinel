@@ -17,6 +17,20 @@ pub fn parse_contract_id(strkey: &str) -> SentinelResult<[u8; 32]> {
         .map_err(|e| SentinelError::InvalidContractAddress(format!("{}: {}", strkey, e)))
 }
 
+/// Maximum recursion depth allowed during XDR deserialization to prevent stack exhaustion.
+pub const XDR_MAX_RECURSION_DEPTH: u32 = 100;
+
+/// Maximum payload byte length allowed during XDR deserialization (10 MB).
+pub const XDR_MAX_BYTE_LENGTH: usize = 10 * 1024 * 1024;
+
+/// Returns standard bounded limits for safe XDR deserialization.
+pub fn safe_xdr_limits() -> Limits {
+    Limits {
+        depth: XDR_MAX_RECURSION_DEPTH,
+        len: XDR_MAX_BYTE_LENGTH,
+    }
+}
+
 /// Derives the base64-encoded `LedgerKey` XDR for a contract's instance data (`ContractDataDurability::Persistent`).
 pub fn derive_contract_instance_key(contract_id: &[u8; 32]) -> SentinelResult<String> {
     let ledger_key = LedgerKey::ContractData(LedgerKeyContractData {
@@ -49,10 +63,10 @@ pub fn extract_wasm_hash_from_instance_entry(
     entry_xdr_base64: &str,
 ) -> SentinelResult<Option<[u8; 32]>> {
     let entry_data =
-        if let Ok(entry) = LedgerEntry::from_xdr_base64(entry_xdr_base64, Limits::none()) {
+        if let Ok(entry) = LedgerEntry::from_xdr_base64(entry_xdr_base64, safe_xdr_limits()) {
             entry.data
         } else {
-            LedgerEntryData::from_xdr_base64(entry_xdr_base64, Limits::none()).map_err(|e| {
+            LedgerEntryData::from_xdr_base64(entry_xdr_base64, safe_xdr_limits()).map_err(|e| {
                 SentinelError::InvalidXdrKey(format!(
                     "Failed to decode base64 instance entry XDR: {}",
                     e
@@ -108,7 +122,7 @@ pub fn derive_persistent_xdr_key(
     contract_id: &[u8; 32],
     scval_base64: &str,
 ) -> SentinelResult<String> {
-    let key_scval = ScVal::from_xdr_base64(scval_base64, Limits::none()).map_err(|e| {
+    let key_scval = ScVal::from_xdr_base64(scval_base64, safe_xdr_limits()).map_err(|e| {
         SentinelError::InvalidXdrKey(format!(
             "Failed to decode base64 ScVal key '{}': {}",
             scval_base64, e
@@ -272,6 +286,19 @@ mod tests {
     fn test_derive_persistent_xdr_key_invalid() {
         let contract_id = [6u8; 32];
         let result = derive_persistent_xdr_key(&contract_id, "invalid_base64_xdr!!!");
+        assert!(matches!(result, Err(SentinelError::InvalidXdrKey(_))));
+    }
+
+    #[test]
+    fn test_safe_xdr_limits_configuration() {
+        let limits = safe_xdr_limits();
+        assert_eq!(limits.depth, 100);
+        assert_eq!(limits.len, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_extract_wasm_hash_malformed_rejected() {
+        let result = extract_wasm_hash_from_instance_entry("not-valid-xdr-base64!!");
         assert!(matches!(result, Err(SentinelError::InvalidXdrKey(_))));
     }
 }

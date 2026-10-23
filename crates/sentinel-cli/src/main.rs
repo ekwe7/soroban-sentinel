@@ -1,27 +1,26 @@
-mod args;
+#![forbid(unsafe_code)]
 
-use args::{Cli, Commands};
 use clap::Parser;
+use sentinel_cli::args::{Cli, Commands};
+use sentinel_cli::commands::{run_scan, EXIT_INVALID_ARGS};
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Scan(args) => {
-            println!("Scanning contract: {}", args.contract_id);
-            println!("Target network: {}", args.network);
-            if let Some(ref rpc) = args.rpc_url {
-                println!("RPC URL: {}", rpc);
-            }
-            println!("Output format: {}", args.format);
-            println!("Threshold: {} ledgers", args.threshold);
-            if !args.key.is_empty() {
-                println!("Persistent keys: {:?}", args.key);
-            }
-            if !args.key_xdr.is_empty() {
-                println!("Persistent XDR keys: {:?}", args.key_xdr);
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(err) => {
+            if err.use_stderr() {
+                let _ = err.print();
+                std::process::exit(EXIT_INVALID_ARGS);
+            } else {
+                err.exit();
             }
         }
-    }
+    };
+
+    let exit_code = match cli.command {
+        Commands::Scan(args) => run_scan(args).await,
+    };
+
+    std::process::exit(exit_code);
 }

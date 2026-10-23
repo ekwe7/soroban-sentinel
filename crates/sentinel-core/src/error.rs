@@ -23,6 +23,12 @@ pub enum SentinelError {
 
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Invalid threshold configuration: {0}")]
+    InvalidThresholdConfig(String),
+
+    #[error("Invalid RPC URL: {0}")]
+    InvalidRpcUrl(String),
 }
 
 /// Convenience type alias for `Result<T, SentinelError>`.

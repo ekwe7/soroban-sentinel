@@ -7,6 +7,10 @@ license.workspace = true
 readme = "../../README.md"
 description = "Command-line interface for Soroban Sentinel"
 
+[lib]
+name = "sentinel_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "sentinel"
 path = "src/main.rs"
@@ -23,3 +27,6 @@ thiserror.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+wiremock.workspace = true
+stellar-xdr.workspace = true
+stellar-strkey.workspace = true
