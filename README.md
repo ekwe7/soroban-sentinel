@@ -118,7 +118,7 @@ To operate soundly without making unsupported protocol assumptions:
 ### Quickstart: Building from Source
 ```bash
 # Clone and build release binary
-git clone https://github.com/soroban-sentinel/soroban-sentinel.git
+git clone https://github.com/ekwe7/soroban-sentinel.git
 cd soroban-sentinel
 cargo build --release -p sentinel-cli
 
