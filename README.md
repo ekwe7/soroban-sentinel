@@ -90,6 +90,7 @@ The following table distinguishes between MVP release features and post-MVP road
 | **CLI (MVP)** | Terminal Table Output (`--format text`) | N/A | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
 | **CLI (MVP)** | Machine-Readable JSON Output (`--format json`) | N/A | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
 | **CLI (MVP)** | Explicit Persistent Key Verification (`--key`, `--key-xdr`) | Protocol 20+ | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
+| **CLI** | Cross-Network Contract Storage and TTL Comparison (`sentinel diff-networks`) | Protocol 20+ | **Available** | |
 | **CLI** | Markdown Output (`--format markdown`) | N/A | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Rent Simulation (`sentinel forecast <ID>`) | Protocol 20+ | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Fleet Watch Mode (`sentinel watch --config`) | Protocol 20+ | **Planned (Sprint 4)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-4) |
@@ -134,6 +135,19 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --key ADMIN \
   --key COUNTER
 ```
+
+### Comparing a Contract Across Networks
+`diff-networks` scans both RPC endpoints concurrently and compares the contract instance plus any explicitly requested persistent keys. It compares remaining TTL horizons so that different latest-ledger sequences do not create a false drift:
+
+```bash
+sentinel diff-networks CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --network-a testnet \
+  --network-b mainnet \
+  --key ADMIN \
+  --ttl-drift-threshold 120960
+```
+
+For local or custom RPC endpoints, use `--rpc-url-a` and `--rpc-url-b`. Missing entries, durability differences, and TTL variance above the threshold are highlighted in the comparison table and return exit code `1`; an identical comparison returns `0`.
 
 ### Composite Storage Key Expressions (`--key-expr`)
 Soroban contracts commonly key map storage with composite enum types like `DataKey::Balance(Address)`. These encode as nested vectors (`ScVal::Vec([Symbol("Balance"), Address(..)])`). Instead of hand-crafting base64 XDR for `--key-xdr`, you can query them using `--key-expr`:
@@ -281,4 +295,3 @@ Please read our [Contribution Plan](docs/OPEN_SOURCE_CONTRIBUTION_PLAN.md) and r
 ## 8. License
 
 `soroban-sentinel` is licensed under the [MIT License](LICENSE).
-

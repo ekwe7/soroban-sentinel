@@ -27,6 +27,9 @@ pub enum SentinelError {
     #[error("Invalid threshold configuration: {0}")]
     InvalidThresholdConfig(String),
 
+    #[error("Invalid fee bump: {0}")]
+    InvalidFeeBump(String),
+
     #[error("Invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
 }

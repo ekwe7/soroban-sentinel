@@ -257,6 +257,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Ok,
+            contract_code_state: None,
+            upgrade_event: None,
         }
     }
 

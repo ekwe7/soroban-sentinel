@@ -18,6 +18,52 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
+    /// Compare a contract's storage keys and TTL health across two networks
+    DiffNetworks(DiffNetworksArgs),
+}
+
+/// Command-line arguments for the `sentinel diff-networks` command.
+#[derive(Args, Debug, Clone)]
+pub struct DiffNetworksArgs {
+    /// Target Soroban smart contract address (C... Strkey format)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// First Stellar network to compare
+    #[arg(long = "network-a", value_name = "NETWORK")]
+    pub network_a: String,
+
+    /// Second Stellar network to compare
+    #[arg(long = "network-b", value_name = "NETWORK")]
+    pub network_b: String,
+
+    /// Custom RPC endpoint URL for network A (overrides its network endpoint)
+    #[arg(long = "rpc-url-a", value_name = "URL")]
+    pub rpc_url_a: Option<String>,
+
+    /// Custom RPC endpoint URL for network B (overrides its network endpoint)
+    #[arg(long = "rpc-url-b", value_name = "URL")]
+    pub rpc_url_b: Option<String>,
+
+    /// Persistent storage key symbol to compare (can be specified multiple times)
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Persistent storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Persistent storage key encoded as typed expression (can be specified multiple times)
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+
+    /// Report a significant difference when TTL horizons vary by more than this many ledgers
+    #[arg(
+        long = "ttl-drift-threshold",
+        default_value_t = 120960,
+        value_name = "LEDGERS"
+    )]
+    pub ttl_drift_threshold: u32,
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -110,6 +156,7 @@ mod tests {
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
             }
+            Commands::DiffNetworks(_) => panic!("expected scan command"),
         }
     }
 
@@ -170,6 +217,43 @@ mod tests {
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
             }
+            Commands::DiffNetworks(_) => panic!("expected scan command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_diff_networks_args() {
+        let args = Cli::parse_from([
+            "sentinel",
+            "diff-networks",
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "--network-a",
+            "testnet",
+            "--network-b",
+            "mainnet",
+            "--rpc-url-a",
+            "http://localhost:8001",
+            "--rpc-url-b",
+            "http://localhost:8002",
+            "--key",
+            "COUNTER",
+            "--ttl-drift-threshold",
+            "500",
+        ]);
+        match args.command {
+            Commands::DiffNetworks(diff) => {
+                assert_eq!(
+                    diff.contract_id,
+                    "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                );
+                assert_eq!(diff.network_a, "testnet");
+                assert_eq!(diff.network_b, "mainnet");
+                assert_eq!(diff.rpc_url_a.as_deref(), Some("http://localhost:8001"));
+                assert_eq!(diff.rpc_url_b.as_deref(), Some("http://localhost:8002"));
+                assert_eq!(diff.key, vec!["COUNTER"]);
+                assert_eq!(diff.ttl_drift_threshold, 500);
+            }
+            Commands::Scan(_) => panic!("expected diff-networks command"),
         }
     }
 }
