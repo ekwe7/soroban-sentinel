@@ -9,8 +9,10 @@ use crate::adapters::{
     parse_contract_id, parse_key_expr, safe_xdr_limits,
 };
 use crate::domain::{
-    calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
-    evaluate_risk, Durability, EntryType, RiskLevel, ThresholdConfig, TARGET_LEDGER_CLOSE_SECONDS,
+    calculate_remaining_ledgers, detect_contract_upgrade, estimate_remaining_days,
+    estimate_remaining_seconds_with_velocity, evaluate_risk, ContractCodeState,
+    ContractUpgradeEvent, Durability, EntryType, RiskLevel, ThresholdConfig,
+    DEFAULT_MINIMUM_TTL_LEDGERS, TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -32,6 +34,16 @@ pub struct ScanRequest {
     pub network: Option<String>,
     /// Optional override for ledger close velocity in seconds per ledger.
     pub ledger_seconds_override: Option<f64>,
+    /// Previous scan's WASM code state, when comparing against a baseline.
+    #[serde(default)]
+    pub baseline_code_state: Option<ContractCodeState>,
+    /// Minimum TTL used to estimate code-entry rent in byte-ledgers.
+    #[serde(default = "default_minimum_ttl_ledgers")]
+    pub minimum_ttl_ledgers: u32,
+}
+
+fn default_minimum_ttl_ledgers() -> u32 {
+    DEFAULT_MINIMUM_TTL_LEDGERS
 }
 
 impl ScanRequest {
@@ -45,6 +57,8 @@ impl ScanRequest {
             threshold_config: ThresholdConfig::default(),
             network: None,
             ledger_seconds_override: None,
+            baseline_code_state: None,
+            minimum_ttl_ledgers: DEFAULT_MINIMUM_TTL_LEDGERS,
         }
     }
 
@@ -81,6 +95,18 @@ impl ScanRequest {
     /// Set an optional ledger close velocity override.
     pub fn with_ledger_seconds(mut self, ledger_seconds: Option<f64>) -> Self {
         self.ledger_seconds_override = ledger_seconds;
+        self
+    }
+
+    /// Compare the scan with a previous scan's executable state.
+    pub fn with_baseline_code_state(mut self, baseline: ContractCodeState) -> Self {
+        self.baseline_code_state = Some(baseline);
+        self
+    }
+
+    /// Set the minimum TTL used for rent-obligation estimates.
+    pub fn with_minimum_ttl_ledgers(mut self, minimum_ttl_ledgers: u32) -> Self {
+        self.minimum_ttl_ledgers = minimum_ttl_ledgers;
         self
     }
 }
@@ -169,6 +195,12 @@ pub struct TTLReport {
     pub entries: Vec<StorageEntryReport>,
     /// Aggregate overall risk status for the contract.
     pub overall_status: RiskLevel,
+    /// WASM code hash and actual bytecode size captured for use as a future baseline.
+    #[serde(default)]
+    pub contract_code_state: Option<ContractCodeState>,
+    /// Upgrade detected against the optional baseline supplied in the request.
+    #[serde(default)]
+    pub upgrade_event: Option<ContractUpgradeEvent>,
 }
 
 impl TTLReport {
@@ -328,6 +360,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             .find(|e| e.key_xdr_base64 == instance_key_xdr);
 
         let mut wasm_hash_opt: Option<[u8; 32]> = None;
+        let mut contract_code_state = None;
 
         if let Some(entry) = instance_entry_opt {
             let byte_size = compute_byte_size(&entry.entry_xdr_base64);
@@ -381,6 +414,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 .find(|e| e.key_xdr_base64 == code_key_xdr);
 
             if let Some(code_entry) = code_entry_opt {
+                let code_state = read_contract_code_state(&code_entry.entry_xdr_base64, wasm_hash)?;
+                contract_code_state = Some(code_state);
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
                 let live_until = code_entry.live_until_ledger_seq;
                 let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
@@ -457,6 +492,12 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         }
 
         let overall_status = compute_overall_status(&reports);
+        let upgrade_event = detect_contract_upgrade(
+            request.baseline_code_state.as_ref(),
+            contract_code_state.as_ref(),
+            latest_ledger,
+            request.minimum_ttl_ledgers,
+        );
 
         Ok(TTLReport {
             contract_id: request.contract_id_strkey,
@@ -465,7 +506,50 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             ledger_velocity_seconds: ledger_velocity,
             entries: reports,
             overall_status,
+            contract_code_state,
+            upgrade_event,
         })
+    }
+}
+
+fn read_contract_code_state(
+    entry_xdr_base64: &str,
+    executable_hash: [u8; 32],
+) -> SentinelResult<ContractCodeState> {
+    use stellar_xdr::curr::{ContractCodeEntry, LedgerEntry, LedgerEntryData};
+
+    let entry = if let Ok(ledger_entry) =
+        LedgerEntry::from_xdr_base64(entry_xdr_base64, safe_xdr_limits())
+    {
+        ledger_entry.data
+    } else {
+        LedgerEntryData::from_xdr_base64(entry_xdr_base64, safe_xdr_limits()).map_err(|error| {
+            crate::error::SentinelError::InvalidXdrKey(format!(
+                "Failed to decode contract code entry XDR: {}",
+                error
+            ))
+        })?
+    };
+    match entry {
+        LedgerEntryData::ContractCode(ContractCodeEntry { hash, code, .. }) => {
+            if hash.0 != executable_hash {
+                return Err(crate::error::SentinelError::InvalidXdrKey(
+                    "Contract code entry hash does not match the instance executable".to_string(),
+                ));
+            }
+            Ok(ContractCodeState {
+                code_hash: executable_hash,
+                bytecode_size_bytes: u64::try_from(code.len()).map_err(|error| {
+                    crate::error::SentinelError::InvalidXdrKey(format!(
+                        "Contract code byte size is out of range: {}",
+                        error
+                    ))
+                })?,
+            })
+        }
+        _ => Err(crate::error::SentinelError::InvalidXdrKey(
+            "Decoded code entry is not ContractCode".to_string(),
+        )),
     }
 }
 

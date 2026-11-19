@@ -20,6 +20,12 @@ pub struct JsonTTLReport {
     pub summary: JsonSummary,
     /// Detailed list of evaluated storage entries.
     pub entries: Vec<JsonEntryReport>,
+    /// WASM code state to use as the next scan's baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_code_state: Option<sentinel_core::domain::ContractCodeState>,
+    /// Upgrade detected against the supplied code-state baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_event: Option<sentinel_core::domain::ContractUpgradeEvent>,
     /// Optional comparison against a baseline report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<BaselineDiff>,
@@ -100,6 +106,8 @@ impl From<&TTLReport> for JsonTTLReport {
             ledger_velocity_seconds: report.ledger_velocity_seconds,
             summary: json_summary,
             entries: json_entries,
+            contract_code_state: report.contract_code_state,
+            upgrade_event: report.upgrade_event.clone(),
             changes: None,
         }
     }
@@ -174,6 +182,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Warn,
+            contract_code_state: None,
+            upgrade_event: None,
         };
 
         let json_str = render_json(&report).expect("Should serialize cleanly to JSON");
@@ -245,6 +255,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Ok,
+            contract_code_state: None,
+            upgrade_event: None,
         };
 
         let json_str = render_json(&report).unwrap();
@@ -268,6 +280,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries: vec![],
             overall_status: RiskLevel::Ok,
+            contract_code_state: None,
+            upgrade_event: None,
         };
 
         let json_str = render_json(&report).unwrap();
