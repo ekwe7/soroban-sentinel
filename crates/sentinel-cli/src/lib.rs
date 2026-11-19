@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alerts;
 pub mod args;
 pub mod commands;
 pub mod formatters;

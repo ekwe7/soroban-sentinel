@@ -74,3 +74,19 @@ pub trait LedgerReader: Send + Sync {
         Ok(None)
     }
 }
+
+/// Health fields reported by Soroban RPC.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcHealth {
+    pub status: String,
+    pub latest_ledger: u32,
+}
+
+/// Network identity reported by Soroban RPC.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcNetwork {
+    pub passphrase: String,
+    pub protocol_version: u32,
+}

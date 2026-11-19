@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use sentinel_cli::args::{Cli, Commands};
-use sentinel_cli::commands::{run_scan, EXIT_INVALID_ARGS};
+use sentinel_cli::commands::{doctor::run_doctor, run_scan, watch::run_watch, EXIT_INVALID_ARGS};
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +20,8 @@ async fn main() {
 
     let exit_code = match cli.command {
         Commands::Scan(args) => run_scan(args).await,
+        Commands::Doctor(args) => run_doctor(args).await,
+        Commands::Watch(args) => run_watch(args).await,
     };
 
     std::process::exit(exit_code);

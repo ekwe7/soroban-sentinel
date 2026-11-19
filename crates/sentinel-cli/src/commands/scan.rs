@@ -120,39 +120,56 @@ pub fn load_and_validate_baseline(
     Ok(snapshot)
 }
 
+pub(super) fn prepare_scan(
+    args: &ScanArgs,
+) -> Result<(ScanContractUseCase<SorobanRpcClient>, ScanRequest), String> {
+    if args
+        .rpc_timeout
+        .is_some_and(|timeout| !(1..=120).contains(&timeout))
+    {
+        return Err(format!(
+            "--rpc-timeout must be between 1 and 120 seconds (got {})",
+            args.rpc_timeout.unwrap_or_default()
+        ));
+    }
+    if args.rpc_max_retries.is_some_and(|retries| retries > 10) {
+        return Err(format!(
+            "--rpc-max-retries must be between 0 and 10 (got {})",
+            args.rpc_max_retries.unwrap_or_default()
+        ));
+    }
+    if args
+        .ledger_seconds
+        .is_some_and(|seconds| !(1.0..=60.0).contains(&seconds))
+    {
+        return Err(format!(
+            "--ledger-seconds must be between 1.0 and 60.0 (got {})",
+            args.ledger_seconds.unwrap_or_default()
+        ));
+    }
+    let url = resolve_rpc_url(&args.network, args.rpc_url.as_deref())?;
+    let thresholds = resolve_threshold_config(args.threshold, args.critical_threshold)?;
+    let mut client = SorobanRpcClient::new_with_timeout(
+        url,
+        Duration::from_secs(args.rpc_timeout.unwrap_or(10)),
+    );
+    if let Some(retries) = args.rpc_max_retries {
+        let mut policy = client.retry_policy().clone();
+        policy.max_retries = retries;
+        client = client.with_retry_policy(policy);
+    }
+    let request = ScanRequest::new(&args.contract_id)
+        .with_network(&args.network)
+        .with_threshold_config(thresholds)
+        .with_persistent_symbols(args.key.clone())
+        .with_persistent_xdr_keys(args.key_xdr.clone())
+        .with_persistent_key_exprs(args.key_expr.clone())
+        .with_ledger_seconds(args.ledger_seconds);
+    Ok((ScanContractUseCase::new(client), request))
+}
+
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
 pub async fn run_scan(args: ScanArgs) -> i32 {
-    // 1. Validate argument bounds before making any RPC calls
-    if let Some(timeout) = args.rpc_timeout {
-        if !(1..=120).contains(&timeout) {
-            eprintln!(
-                "Error: --rpc-timeout must be between 1 and 120 seconds (got {})",
-                timeout
-            );
-            return EXIT_INVALID_ARGS;
-        }
-    }
-
-    if let Some(retries) = args.rpc_max_retries {
-        if retries > 10 {
-            eprintln!(
-                "Error: --rpc-max-retries must be between 0 and 10 (got {})",
-                retries
-            );
-            return EXIT_INVALID_ARGS;
-        }
-    }
-
-    if let Some(ledger_seconds) = args.ledger_seconds {
-        if !(1.0..=60.0).contains(&ledger_seconds) {
-            eprintln!(
-                "Error: --ledger-seconds must be between 1.0 and 60.0 (got {})",
-                ledger_seconds
-            );
-            return EXIT_INVALID_ARGS;
-        }
-    }
-
     let baseline_snapshot = if let Some(ref path) = args.baseline {
         match load_and_validate_baseline(path, &args.contract_id, &args.network) {
             Ok(s) => Some(s),
@@ -165,42 +182,13 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         None
     };
 
-    let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
-        Ok(url) => url,
-        Err(err) => {
-            eprintln!("Error: {}", err);
+    let (usecase, request) = match prepare_scan(&args) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            eprintln!("Error: {error}");
             return EXIT_INVALID_ARGS;
         }
     };
-
-    let threshold_config = match resolve_threshold_config(args.threshold, args.critical_threshold) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
-    let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
-    let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
-    if let Some(retries) = args.rpc_max_retries {
-        let mut policy = rpc_client.retry_policy().clone();
-        policy.max_retries = retries;
-        rpc_client = rpc_client.with_retry_policy(policy);
-    }
-
-    let usecase = ScanContractUseCase::new(rpc_client);
-
-    let mut request = ScanRequest::new(&args.contract_id)
-        .with_network(&args.network)
-        .with_threshold_config(threshold_config)
-        .with_persistent_symbols(args.key)
-        .with_persistent_xdr_keys(args.key_xdr)
-        .with_persistent_key_exprs(args.key_expr);
-
-    if let Some(ls) = args.ledger_seconds {
-        request = request.with_ledger_seconds(Some(ls));
-    }
 
     let report = match usecase.execute(request).await {
         Ok(r) => r,

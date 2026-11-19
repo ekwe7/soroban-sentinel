@@ -18,6 +18,38 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
+    /// Check Soroban RPC connectivity, network identity, and protocol support
+    Doctor(DoctorArgs),
+    /// Monitor one contract and notify configured incident providers
+    Watch(WatchArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+}
+
+// Avoid Debug implementations that print provider credentials.
+#[derive(Args)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    pub scan: ScanArgs,
+    /// Seconds between scans
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    pub interval: u64,
+    #[arg(long, env = "PAGERDUTY_ROUTING_KEY", hide_env_values = true)]
+    pub pagerduty_routing_key: Option<String>,
+    #[arg(long, env = "OPSGENIE_API_KEY", hide_env_values = true)]
+    pub opsgenie_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for WatchArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WatchArgs").finish_non_exhaustive()
+    }
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -110,6 +142,7 @@ mod tests {
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
             }
+            _ => panic!("expected scan"),
         }
     }
 
@@ -170,6 +203,7 @@ mod tests {
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
             }
+            _ => panic!("expected scan"),
         }
     }
 }

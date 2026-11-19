@@ -6,3 +6,4 @@ pub use scan::{
     compute_overall_status, ReportSummary, ScanContractUseCase, ScanRequest, StorageEntryReport,
     TTLReport,
 };
+pub mod discover;

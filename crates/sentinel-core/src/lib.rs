@@ -25,7 +25,11 @@ pub use domain::{
     MAX_BASELINE_FILE_BYTES, SECONDS_PER_DAY, TARGET_LEDGER_CLOSE_SECONDS,
 };
 pub use error::{SentinelError, SentinelResult};
+pub use ports::submitter::{
+    MockTransactionSubmitter, SubmissionOutcome, SubmissionPolicy, TransactionSubmitter,
+};
 pub use ports::{LatestLedgerInfo, LedgerReader, MockLedgerReader, RawLedgerEntry};
+pub use usecases::discover::discover_storage_keys;
 pub use usecases::{
     compute_overall_status, ReportSummary, ScanContractUseCase, ScanRequest, StorageEntryReport,
     TTLReport,

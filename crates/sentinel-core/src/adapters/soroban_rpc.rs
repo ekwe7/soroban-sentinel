@@ -211,8 +211,22 @@ impl SorobanRpcClient {
         &self.retry_policy
     }
 
+    pub async fn get_health(&self) -> SentinelResult<crate::ports::reader::RpcHealth> {
+        self.send_rpc_request("getHealth", serde_json::json!({}))
+            .await
+    }
+
+    pub async fn get_network(&self) -> SentinelResult<crate::ports::reader::RpcNetwork> {
+        self.send_rpc_request("getNetwork", serde_json::json!({}))
+            .await
+    }
+
     /// Internal generic JSON-RPC 2.0 request dispatcher with retry and exponential backoff middleware.
-    async fn send_rpc_request<P, R>(&self, method: &'static str, params: P) -> SentinelResult<R>
+    pub(super) async fn send_rpc_request<P, R>(
+        &self,
+        method: &'static str,
+        params: P,
+    ) -> SentinelResult<R>
     where
         P: Serialize + Send,
         R: for<'de> Deserialize<'de>,
@@ -224,6 +238,9 @@ impl SorobanRpcClient {
             params,
         };
 
+        // Writes can be accepted before a transport failure is visible.
+        // Only the submission adapter retries an explicit TRY_AGAIN_LATER.
+        let retryable = method != "sendTransaction";
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
@@ -240,8 +257,9 @@ impl SorobanRpcClient {
                     let status = response.status();
 
                     // Check for rate limiting (429) or transient server unavailability (503)
-                    if (status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || status == reqwest::StatusCode::SERVICE_UNAVAILABLE)
+                    if retryable
+                        && (status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE)
                         && attempt < self.retry_policy.max_retries
                     {
                         let retry_after = parse_retry_after(response.headers());
@@ -305,7 +323,9 @@ impl SorobanRpcClient {
                 }
                 Err(e) => {
                     // Retry on connect errors or timeouts if attempts remain
-                    if (e.is_connect() || e.is_timeout()) && attempt < self.retry_policy.max_retries
+                    if retryable
+                        && (e.is_connect() || e.is_timeout())
+                        && attempt < self.retry_policy.max_retries
                     {
                         let backoff = self.retry_policy.next_delay(attempt, None);
                         tokio::time::sleep(backoff).await;

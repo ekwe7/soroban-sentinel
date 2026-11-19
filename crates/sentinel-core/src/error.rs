@@ -27,6 +27,18 @@ pub enum SentinelError {
     #[error("Invalid threshold configuration: {0}")]
     InvalidThresholdConfig(String),
 
+    #[error("Invalid signed transaction envelope: {0}")]
+    InvalidTransactionEnvelope(String),
+
+    #[error("Transaction {tx_hash} rejected by RPC (result code: {code:?})")]
+    TransactionRejected {
+        tx_hash: String,
+        code: Option<stellar_xdr::curr::TransactionResultCode>,
+    },
+
+    #[error("RPC still requested retry for transaction {0}")]
+    TransactionRetryExhausted(String),
+
     #[error("Invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
 }

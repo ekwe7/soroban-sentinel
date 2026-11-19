@@ -268,6 +268,16 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
 
     /// Executes the full contract scan workflow.
     pub async fn execute(&self, request: ScanRequest) -> SentinelResult<TTLReport> {
+        self.execute_with_keys(request)
+            .await
+            .map(|(report, _)| report)
+    }
+
+    /// Returns raw ledger keys in the same order as the report entries.
+    pub async fn execute_with_keys(
+        &self,
+        request: ScanRequest,
+    ) -> SentinelResult<(TTLReport, Vec<String>)> {
         let contract_id_bytes = parse_contract_id(&request.contract_id_strkey)?;
         request.threshold_config.validate()?;
         let latest_ledger_info = self.reader.get_latest_ledger().await?;
@@ -369,6 +379,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             ));
         }
 
+        let mut report_keys = vec![instance_key_xdr];
+
         // 5. Process ContractCode entry (if WASM executable exists)
         if let Some(wasm_hash) = wasm_hash_opt {
             let code_key_xdr = derive_contract_code_key(&wasm_hash)?;
@@ -380,6 +392,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 .into_iter()
                 .find(|e| e.key_xdr_base64 == code_key_xdr);
 
+            report_keys.push(code_key_xdr);
             if let Some(code_entry) = code_entry_opt {
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
                 let live_until = code_entry.live_until_ledger_seq;
@@ -419,6 +432,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         // 6. Process Persistent entries
         for (ident, key_xdr) in persistent_descriptors {
             let found_entry = raw_entries.iter().find(|e| e.key_xdr_base64 == key_xdr);
+            report_keys.push(key_xdr);
 
             if let Some(entry) = found_entry {
                 let byte_size = compute_byte_size(&entry.entry_xdr_base64);
@@ -458,14 +472,17 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
 
         let overall_status = compute_overall_status(&reports);
 
-        Ok(TTLReport {
-            contract_id: request.contract_id_strkey,
-            network,
-            latest_ledger,
-            ledger_velocity_seconds: ledger_velocity,
-            entries: reports,
-            overall_status,
-        })
+        Ok((
+            TTLReport {
+                contract_id: request.contract_id_strkey,
+                network,
+                latest_ledger,
+                ledger_velocity_seconds: ledger_velocity,
+                entries: reports,
+                overall_status,
+            },
+            report_keys,
+        ))
     }
 }
 
