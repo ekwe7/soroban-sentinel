@@ -296,6 +296,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Warn,
+            contract_code_state: None,
+            upgrade_event: None,
         };
 
         let output = render_text(&report);
@@ -360,6 +362,8 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Archived,
+            contract_code_state: None,
+            upgrade_event: None,
         };
 
         let output = render_text(&report);

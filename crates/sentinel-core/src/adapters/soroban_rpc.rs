@@ -4,11 +4,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::domain::FeeStats;
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
 
 /// Maximum number of keys allowed in a single `getLedgerEntries` request by Soroban RPC.
 pub const MAX_KEYS_PER_REQUEST: usize = 200;
+
+/// Maximum number of JSON-RPC requests allowed in a single batch payload.
+pub const MAX_RPC_BATCH_SIZE: usize = 200;
 
 /// Default maximum retry attempts for transient errors (HTTP 429 / 503).
 pub const DEFAULT_MAX_RETRIES: u32 = 3;
@@ -211,19 +215,17 @@ impl SorobanRpcClient {
         &self.retry_policy
     }
 
-    /// Internal generic JSON-RPC 2.0 request dispatcher with retry and exponential backoff middleware.
-    async fn send_rpc_request<P, R>(&self, method: &'static str, params: P) -> SentinelResult<R>
-    where
-        P: Serialize + Send,
-        R: for<'de> Deserialize<'de>,
-    {
-        let request_payload = JsonRpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method,
-            params,
-        };
+    /// Fetches recent Soroban transaction inclusion fee percentiles.
+    pub async fn get_fee_stats(&self) -> SentinelResult<FeeStats> {
+        self.send_rpc_request("getFeeStats", serde_json::json!({}))
+            .await
+    }
 
+    /// Internal generic JSON-RPC 2.0 request dispatcher with retry and exponential backoff middleware.
+    async fn send_http_request<P>(&self, request_payload: &P) -> SentinelResult<Vec<u8>>
+    where
+        P: Serialize + Sync + ?Sized,
+    {
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
@@ -281,27 +283,7 @@ impl SorobanRpcClient {
                         body_bytes.extend_from_slice(&chunk);
                     }
 
-                    let rpc_response: JsonRpcResponse<R> = serde_json::from_slice(&body_bytes)
-                        .map_err(|e| {
-                            SentinelError::SerializationError(format!(
-                                "Failed to parse JSON-RPC response: {}",
-                                e
-                            ))
-                        })?;
-
-                    if let Some(error) = rpc_response.error {
-                        return Err(SentinelError::RpcResponseError {
-                            code: error.code,
-                            message: error.message,
-                        });
-                    }
-
-                    return rpc_response
-                        .result
-                        .ok_or_else(|| SentinelError::RpcResponseError {
-                            code: -32603,
-                            message: "Missing result field in JSON-RPC 2.0 response".to_string(),
-                        });
+                    return Ok(body_bytes);
                 }
                 Err(e) => {
                     // Retry on connect errors or timeouts if attempts remain
@@ -327,6 +309,84 @@ impl SorobanRpcClient {
             }
         }
     }
+
+    /// Send a JSON-RPC batch and return its responses ordered by request ID.
+    async fn send_rpc_batch<P>(
+        &self,
+        requests: &[JsonRpcRequest<P>],
+    ) -> SentinelResult<Vec<JsonRpcResponse<serde_json::Value>>>
+    where
+        P: Serialize + Sync,
+    {
+        let body = self.send_http_request(requests).await?;
+        let responses: Vec<JsonRpcResponse<serde_json::Value>> = serde_json::from_slice(&body)
+            .map_err(|e| {
+                SentinelError::SerializationError(format!(
+                    "Failed to parse JSON-RPC batch response: {}",
+                    e
+                ))
+            })?;
+
+        let mut ordered_responses = std::collections::BTreeMap::new();
+        for response in responses {
+            let id = response
+                .id
+                .as_ref()
+                .and_then(serde_json::Value::as_u64)
+                .filter(|id| (1..=requests.len() as u64).contains(id))
+                .ok_or_else(|| {
+                    SentinelError::SerializationError(
+                        "JSON-RPC batch response contained an invalid request ID".to_string(),
+                    )
+                })?;
+            if ordered_responses.insert(id, response).is_some() {
+                return Err(SentinelError::SerializationError(format!(
+                    "JSON-RPC batch response contained duplicate request ID {}",
+                    id
+                )));
+            }
+        }
+
+        if ordered_responses.len() != requests.len() {
+            return Err(SentinelError::SerializationError(
+                "JSON-RPC batch response was missing one or more request IDs".to_string(),
+            ));
+        }
+
+        Ok(ordered_responses.into_values().collect())
+    }
+
+    /// Internal generic JSON-RPC 2.0 request dispatcher with retry and exponential backoff middleware.
+    async fn send_rpc_request<P, R>(&self, method: &'static str, params: P) -> SentinelResult<R>
+    where
+        P: Serialize + Send + Sync,
+        R: for<'de> Deserialize<'de>,
+    {
+        let request_payload = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            params,
+        };
+        let body = self.send_http_request(&request_payload).await?;
+        let rpc_response: JsonRpcResponse<R> = serde_json::from_slice(&body).map_err(|e| {
+            SentinelError::SerializationError(format!("Failed to parse JSON-RPC response: {}", e))
+        })?;
+
+        if let Some(error) = rpc_response.error {
+            return Err(SentinelError::RpcResponseError {
+                code: error.code,
+                message: error.message,
+            });
+        }
+
+        rpc_response
+            .result
+            .ok_or_else(|| SentinelError::RpcResponseError {
+                code: -32603,
+                message: "Missing result field in JSON-RPC 2.0 response".to_string(),
+            })
+    }
 }
 
 #[async_trait]
@@ -351,23 +411,71 @@ impl LedgerReader for SorobanRpcClient {
         }
 
         let mut all_entries = Vec::new();
+        let mut successful_responses = 0usize;
+        let mut first_item_error = None;
+        let key_chunks: Vec<_> = keys_xdr_base64.chunks(MAX_KEYS_PER_REQUEST).collect();
 
-        // Enforce Soroban RPC request ceiling of <= 200 keys per query chunk
-        for chunk in keys_xdr_base64.chunks(MAX_KEYS_PER_REQUEST) {
-            let params = GetLedgerEntriesParams { keys: chunk };
+        for chunk_group in key_chunks.chunks(MAX_RPC_BATCH_SIZE) {
+            let requests: Vec<_> = chunk_group
+                .iter()
+                .enumerate()
+                .map(|(index, chunk)| JsonRpcRequest {
+                    jsonrpc: "2.0",
+                    id: index as u64 + 1,
+                    method: "getLedgerEntries",
+                    params: GetLedgerEntriesParams { keys: chunk },
+                })
+                .collect();
+            let responses = self.send_rpc_batch(&requests).await?;
 
-            let result: GetLedgerEntriesResult =
-                self.send_rpc_request("getLedgerEntries", params).await?;
-
-            if let Some(entries) = result.entries {
-                for item in entries {
-                    all_entries.push(RawLedgerEntry::new(
-                        item.key,
-                        item.xdr,
-                        item.live_until_ledger_seq.unwrap_or(0),
-                        item.last_modified_ledger_seq.unwrap_or(0),
-                    ));
+            for response in responses {
+                if let Some(error) = response.error {
+                    first_item_error.get_or_insert(SentinelError::RpcResponseError {
+                        code: error.code,
+                        message: error.message,
+                    });
+                    continue;
                 }
+
+                let result = match response.result {
+                    Some(value) => match serde_json::from_value::<GetLedgerEntriesResult>(value) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            first_item_error.get_or_insert_with(|| {
+                                SentinelError::SerializationError(format!(
+                                    "Failed to parse getLedgerEntries result: {}",
+                                    error
+                                ))
+                            });
+                            continue;
+                        }
+                    },
+                    None => {
+                        first_item_error.get_or_insert(SentinelError::RpcResponseError {
+                            code: -32603,
+                            message: "Missing result field in JSON-RPC batch response".to_string(),
+                        });
+                        continue;
+                    }
+                };
+                successful_responses += 1;
+
+                if let Some(entries) = result.entries {
+                    for item in entries {
+                        all_entries.push(RawLedgerEntry::new(
+                            item.key,
+                            item.xdr,
+                            item.live_until_ledger_seq.unwrap_or(0),
+                            item.last_modified_ledger_seq.unwrap_or(0),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if successful_responses == 0 {
+            if let Some(error) = first_item_error {
+                return Err(error);
             }
         }
 
@@ -634,7 +742,7 @@ mod tests {
     async fn test_wiremock_get_ledger_entries_success() {
         let mock_server = MockServer::start().await;
 
-        let response_body = serde_json::json!({
+        let response_body = serde_json::json!([{
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
@@ -648,7 +756,7 @@ mod tests {
                     }
                 ]
             }
-        });
+        }]);
 
         Mock::given(method("POST"))
             .and(path("/"))
