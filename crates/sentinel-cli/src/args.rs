@@ -35,6 +35,9 @@ pub enum Commands {
 
     /// Scan contracts once from a TOML manifest
     Check(CheckArgs),
+
+    /// Generate a systemd or launchd service definition for autonomous watching
+    InstallService(InstallServiceArgs),
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -238,6 +241,30 @@ pub struct CheckArgs {
     /// Report format
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
+}
+
+/// Command-line arguments for `sentinel install-service`.
+#[derive(Args, Debug, Clone)]
+pub struct InstallServiceArgs {
+    /// Generate a systemd .service unit (mutually exclusive with --launchd)
+    #[arg(long, conflicts_with = "launchd")]
+    pub systemd: bool,
+
+    /// Generate a macOS launchd .plist (mutually exclusive with --systemd)
+    #[arg(long, conflicts_with = "systemd")]
+    pub launchd: bool,
+
+    /// Path to the TOML fleet manifest
+    #[arg(long, value_name = "PATH")]
+    pub manifest: std::path::PathBuf,
+
+    /// User account used by the service
+    #[arg(long, value_name = "USER")]
+    pub user: Option<String>,
+
+    /// Directory in which to write the generated service file
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: Option<std::path::PathBuf>,
 }
 
 #[cfg(test)]
