@@ -24,5 +24,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+proptest = "1.4"
 tracing-subscriber.workspace = true
 tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "time", "test-util"] }
