@@ -6,6 +6,7 @@ pub mod cold_storage;
 pub mod compare;
 pub mod debt;
 pub mod entry;
+pub mod events;
 pub mod footprint;
 pub mod planner;
 pub mod risk;
@@ -18,6 +19,11 @@ pub use bundle::{
 pub use compare::{
     compare_reports, BaselineDiff, BaselineDiffSummary, BaselineEntrySnapshot, BaselineSnapshot,
     ChangeCategory, EntryDiff, MAX_BASELINE_FILE_BYTES,
+};
+pub use entry::{Durability, EntryType, StorageEntry};
+pub use events::{
+    classify_state_archival_event, ContractEvent, DecodedContractEvent, SorobanEventType,
+    StateArchivalEventKind,
 };
 pub use debt::{RentDebt, RentDebtCalculator};
 pub use entry::{Durability, EntryType, InstanceStorageBreakdown, SacAssetInfo, StorageEntry};

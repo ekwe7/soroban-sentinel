@@ -12,6 +12,11 @@ pub mod usecases;
 
 pub use adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
+    derive_persistent_symbol_key, derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry,
+    footprint_to_xdr_base64, parse_contract_id, parse_key_expr, parse_ledger_footprint,
+    read_only_footprint, split_footprint_keys, RetryPolicy, SorobanRpcClient,
+    DEFAULT_BASE_RETRY_DELAY_MS, DEFAULT_MAX_RETRIES, MAX_EVENTS_PER_PAGE, MAX_EVENT_PAGES,
+    MAX_KEYS_PER_REQUEST, MAX_KEY_EXPR_DEPTH, MAX_KEY_EXPR_LEN,
     derive_persistent_symbol_key, derive_persistent_xdr_key, derive_sac_allowance_key,
     derive_sac_balance_key, extract_instance_storage_breakdown, extract_sac_asset_info,
     extract_wasm_hash_from_instance_entry, footprint_to_xdr_base64, parse_contract_id,
@@ -24,6 +29,12 @@ pub use domain::{
     calculate_remaining_ledgers, compare_reports, estimate_horizon_days,
     estimate_horizon_days_with_velocity, estimate_remaining_days, estimate_remaining_seconds,
     estimate_remaining_seconds_with_velocity, evaluate_protocol_scenario, evaluate_risk,
+    plan_bundle_footprints, AtRiskFootprint, BaselineDiff, BaselineDiffSummary,
+    BaselineEntrySnapshot, BaselineSnapshot, BundleError, BundleFootprint, ChangeCategory,
+    ContractEvent, DecodedContractEvent, Durability, EntryDiff, EntryType, FootprintAccess,
+    FootprintValidation, FootprintValidator, NetworkRentParameters, ProtocolScenarioReport,
+    RiskLevel, ScenarioEntry, ScenarioEntryImpact, ScenarioError, SorobanEventType,
+    StateArchivalEventKind, StorageEntry, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
     plan_bundle_footprints, plan_extension, plan_extension_with_cost, AtRiskFootprint,
     BaselineDiff, BaselineDiffSummary, BaselineEntrySnapshot, BaselineSnapshot, BundleError,
     BundleFootprint, ChangeCategory, DeferralReason, DeferredExtension, Durability, EntryDiff,
@@ -36,6 +47,7 @@ pub use domain::{
 };
 pub use error::{SentinelError, SentinelResult};
 pub use ports::{
+    EventStreamReader, LatestLedgerInfo, LedgerReader, MockLedgerReader, RawLedgerEntry,
     CacheStats, CachedLedgerReader, LatestLedgerInfo, LedgerReader, MockLedgerReader,
     RawLedgerEntry,
 };

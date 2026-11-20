@@ -13,7 +13,8 @@ pub use failover_rpc::{EndpointHealthSnapshot, FailoverConfig, MultiRpcFailoverR
 pub use key_expr::{parse_key_expr, MAX_KEY_EXPR_DEPTH, MAX_KEY_EXPR_LEN};
 pub use soroban_rpc::{
     validate_rpc_url, RetryPolicy, SorobanRpcClient, DEFAULT_BASE_RETRY_DELAY_MS,
-    DEFAULT_MAX_RETRIES, MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
+    DEFAULT_MAX_RETRIES, MAX_EVENTS_PER_PAGE, MAX_EVENT_PAGES, MAX_KEYS_PER_REQUEST,
+    MAX_RPC_RESPONSE_BYTES,
 };
 pub use xdr_keys::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
