@@ -213,7 +213,8 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
                 | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
                 SentinelError::RpcConnectionTimeout(_)
                 | SentinelError::RpcResponseError { .. }
-                | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
+                | SentinelError::SerializationError(_)
+                | SentinelError::InvalidWasm(_) => EXIT_RPC_FAILURE,
                 _ => EXIT_INVALID_ARGS,
             };
         }

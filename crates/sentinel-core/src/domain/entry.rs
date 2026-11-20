@@ -30,6 +30,7 @@ pub enum EntryType {
     ContractInstance,
     ContractCode,
     PersistentData,
+    TemporaryData,
 }
 
 impl std::fmt::Display for EntryType {
@@ -38,6 +39,7 @@ impl std::fmt::Display for EntryType {
             Self::ContractInstance => write!(f, "ContractInstance"),
             Self::ContractCode => write!(f, "ContractCode"),
             Self::PersistentData => write!(f, "PersistentData"),
+            Self::TemporaryData => write!(f, "TemporaryData"),
         }
     }
 }

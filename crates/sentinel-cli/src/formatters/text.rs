@@ -52,6 +52,15 @@ fn format_entry_description(key_identifier: &str) -> String {
                 id.trim_start_matches("persistent_xdr:")
             )
         }
+        id if id.starts_with("temporary:") => {
+            format!("Temporary Key: {}", id.trim_start_matches("temporary:"))
+        }
+        id if id.starts_with("temporary_xdr:") => {
+            format!(
+                "Temporary Key (XDR): {}",
+                id.trim_start_matches("temporary_xdr:")
+            )
+        }
         other => other.to_string(),
     }
 }
@@ -131,7 +140,40 @@ pub fn render_text(report: &TTLReport) -> String {
         report.ledger_velocity_seconds
     );
 
-    format!("{}\n{}\n{}", header_line, table, summary_line)
+    let wasm_details = report
+        .entries
+        .iter()
+        .find_map(|entry| entry.wasm_inspection.as_ref())
+        .map(|inspection| {
+            let interface = inspection
+                .interface_version
+                .map(|version| format!("{}.{}", version.protocol, version.pre_release))
+                .unwrap_or_else(|| "not embedded".to_string());
+            let sections = inspection
+                .section_sizes
+                .iter()
+                .map(|section| format!("{}: {} B", section.name, section.size_bytes))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "WASM: {} B; interface: {}; SDK: {}; build ID: {}; code TTL: {} ledgers ({} vs instance); exposure: {} byte-ledgers; size limit exceeded: {}; nearing archival: {}; sections: {}",
+                format_with_commas(inspection.wasm_size_bytes),
+                interface,
+                inspection.sdk_version.as_deref().unwrap_or("not embedded"),
+                inspection.build_id.as_deref().unwrap_or("not embedded"),
+                format_with_commas(inspection.code_remaining_ledgers),
+                format_with_commas(inspection.ttl_delta_from_instance_ledgers),
+                inspection.byte_ledger_exposure,
+                inspection.exceeds_size_limit,
+                inspection.nearing_archival,
+                sections
+            )
+        });
+
+    match wasm_details {
+        Some(details) => format!("{}\n{}\n{}\n{}", header_line, table, details, summary_line),
+        None => format!("{}\n{}\n{}", header_line, table, summary_line),
+    }
 }
 
 /// Formats a change category into a styled table cell.

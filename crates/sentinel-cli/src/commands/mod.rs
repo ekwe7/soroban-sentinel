@@ -1,9 +1,12 @@
 //! CLI command execution modules.
 
+pub mod budget;
 pub mod bundle;
 pub mod check;
+pub mod export_grafana;
 pub mod scan;
 
+pub use budget::run_budget;
 pub use bundle::run_bundle;
 pub use check::run_check;
 

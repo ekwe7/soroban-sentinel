@@ -22,6 +22,12 @@ pub enum Commands {
     /// Bundle contract and persistent-key TTL extensions into simulated transactions
     Bundle(BundleArgs),
 
+    /// Estimate rent reserve requirements for a contract storage horizon
+    Budget(BudgetArgs),
+
+    /// Export Grafana dashboard and Prometheus alerting definitions
+    ExportGrafana(ExportGrafanaArgs),
+
     /// Scan contracts once from a TOML manifest
     Check(CheckArgs),
 }
@@ -124,6 +130,66 @@ pub struct BundleArgs {
     /// Custom Soroban RPC endpoint URL
     #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
     pub rpc_url: Option<String>,
+}
+
+/// Command-line arguments for the `sentinel budget` command.
+#[derive(Args, Debug, Clone)]
+pub struct BudgetArgs {
+    /// Target Soroban smart contract address
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Target storage horizon in days
+    #[arg(long, default_value_t = 30, value_name = "DAYS")]
+    pub horizon_days: u32,
+
+    /// Network rent rate in stroops per byte per ledger
+    #[arg(long, value_name = "STROOPS_PER_BYTE_LEDGER")]
+    pub fee_rate_stroops_per_byte_ledger: u64,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Persistent storage key symbol to include (repeatable)
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub persistent_keys: Vec<String>,
+
+    /// Persistent storage key encoded as base64 ScVal XDR (repeatable)
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub persistent_key_xdr: Vec<String>,
+
+    /// Persistent storage key encoded as a typed expression (repeatable)
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub persistent_key_exprs: Vec<String>,
+
+    /// Temporary storage key symbol to include (repeatable)
+    #[arg(long = "temporary-key", value_name = "SYMBOL")]
+    pub temporary_keys: Vec<String>,
+
+    /// Temporary storage key encoded as base64 ScVal XDR (repeatable)
+    #[arg(long = "temporary-key-xdr", value_name = "BASE64_XDR")]
+    pub temporary_key_xdr: Vec<String>,
+
+    /// Temporary storage key encoded as a typed expression (repeatable)
+    #[arg(long = "temporary-key-expr", value_name = "EXPR")]
+    pub temporary_key_exprs: Vec<String>,
+}
+
+/// Command-line arguments for the `sentinel export-grafana` command.
+#[derive(Args, Debug, Clone)]
+pub struct ExportGrafanaArgs {
+    /// Directory where dashboard and alert rule files are written
+    #[arg(long, default_value = ".", value_name = "DIR")]
+    pub output_dir: std::path::PathBuf,
 }
 
 /// Command-line arguments for a one-shot manifest check.
@@ -233,6 +299,38 @@ mod tests {
                 assert!(scan.fail_on_regression);
             }
             _ => panic!("expected scan command"),
+        }
+
+        #[test]
+        fn test_parse_budget_and_export_grafana_commands() {
+            let budget = Cli::parse_from([
+                "sentinel",
+                "budget",
+                "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "--horizon-days",
+                "90",
+                "--fee-rate-stroops-per-byte-ledger",
+                "2",
+                "--temporary-key",
+                "CACHE",
+            ]);
+            match budget.command {
+                Commands::Budget(args) => {
+                    assert_eq!(args.horizon_days, 90);
+                    assert_eq!(args.fee_rate_stroops_per_byte_ledger, 2);
+                    assert_eq!(args.temporary_keys, vec!["CACHE"]);
+                }
+                _ => panic!("expected budget command"),
+            }
+
+            let export =
+                Cli::parse_from(["sentinel", "export-grafana", "--output-dir", "monitoring"]);
+            match export.command {
+                Commands::ExportGrafana(args) => {
+                    assert_eq!(args.output_dir, std::path::PathBuf::from("monitoring"));
+                }
+                _ => panic!("expected export-grafana command"),
+            }
         }
     }
 }

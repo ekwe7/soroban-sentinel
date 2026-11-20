@@ -8,7 +8,7 @@ use stellar_xdr::curr::{ReadXdr, WriteXdr};
 use crate::adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
     derive_persistent_symbol_key, derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry,
-    parse_contract_id, parse_key_expr, safe_xdr_limits,
+    inspect_contract_code_entry, parse_contract_id, parse_key_expr, safe_xdr_limits,
 };
 use crate::domain::cold_storage::{
     recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
@@ -16,7 +16,7 @@ use crate::domain::cold_storage::{
 use crate::domain::{
     calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
     evaluate_risk, Durability, EntryType, RiskLevel, StorageEntry, ThresholdConfig,
-    TARGET_LEDGER_CLOSE_SECONDS,
+    WasmCodeInspection, TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -130,6 +130,9 @@ pub struct StorageEntryReport {
     pub remaining_days: f64,
     /// Risk status classification.
     pub status: RiskLevel,
+    /// Parsed code metadata for a ContractCode entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_inspection: Option<WasmCodeInspection>,
 }
 
 impl StorageEntryReport {
@@ -156,7 +159,14 @@ impl StorageEntryReport {
             estimated_remaining_seconds,
             remaining_days,
             status,
+            wasm_inspection: None,
         }
+    }
+
+    /// Attaches parsed WASM metadata to this report entry.
+    pub fn with_wasm_inspection(mut self, inspection: WasmCodeInspection) -> Self {
+        self.wasm_inspection = Some(inspection);
+        self
     }
 }
 
@@ -352,11 +362,13 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             .find(|e| e.key_xdr_base64 == instance_key_xdr);
 
         let mut wasm_hash_opt: Option<[u8; 32]> = None;
+        let mut instance_remaining_ledgers = 0;
 
         if let Some(entry) = instance_entry_opt {
             let byte_size = compute_byte_size(&entry.entry_xdr_base64);
             let live_until = entry.live_until_ledger_seq;
             let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
+            instance_remaining_ledgers = remaining_ledgers;
             let remaining_seconds =
                 estimate_remaining_seconds_with_velocity(remaining_ledgers, ledger_velocity);
             let remaining_days = estimate_remaining_days(remaining_seconds);
@@ -408,22 +420,31 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
                 let live_until = code_entry.live_until_ledger_seq;
                 let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
+                let wasm_inspection = inspect_contract_code_entry(
+                    &code_entry.entry_xdr_base64,
+                    remaining_ledgers,
+                    instance_remaining_ledgers,
+                    request.threshold_config.critical_ledgers,
+                )?;
                 let remaining_seconds =
                     estimate_remaining_seconds_with_velocity(remaining_ledgers, ledger_velocity);
                 let remaining_days = estimate_remaining_days(remaining_seconds);
                 let status = evaluate_risk(remaining_ledgers, &request.threshold_config);
 
-                reports.push(StorageEntryReport::new(
-                    "code_wasm",
-                    EntryType::ContractCode,
-                    Durability::Code,
-                    byte_size,
-                    live_until,
-                    remaining_ledgers,
-                    remaining_seconds,
-                    remaining_days,
-                    status,
-                ));
+                reports.push(
+                    StorageEntryReport::new(
+                        "code_wasm",
+                        EntryType::ContractCode,
+                        Durability::Code,
+                        byte_size,
+                        live_until,
+                        remaining_ledgers,
+                        remaining_seconds,
+                        remaining_days,
+                        status,
+                    )
+                    .with_wasm_inspection(wasm_inspection),
+                );
             } else {
                 // Missing/archived code entry
                 reports.push(StorageEntryReport::new(
@@ -580,7 +601,7 @@ mod tests {
         let symbol_key = derive_persistent_symbol_key(&contract_bytes, "COUNTER").unwrap();
 
         let instance_xdr = make_test_instance_xdr(contract_bytes, wasm_bytes);
-        let code_xdr = make_test_code_xdr(wasm_bytes, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        let code_xdr = make_test_code_xdr(wasm_bytes, b"\0asm\x01\0\0\0");
         let symbol_xdr = make_test_persistent_symbol_xdr(contract_bytes, "COUNTER", 42);
 
         let latest_ledger = 5_400_000;
@@ -629,6 +650,8 @@ mod tests {
         assert_eq!(code.remaining_ledgers, 100_000);
         assert_eq!(code.status, RiskLevel::Warn);
         assert!(code.byte_size > 0);
+        assert_eq!(code.wasm_inspection.as_ref().unwrap().wasm_size_bytes, 8);
+        assert!(!code.wasm_inspection.as_ref().unwrap().nearing_archival);
 
         // 3. Persistent Symbol Entry
         let sym = &report.entries[2];

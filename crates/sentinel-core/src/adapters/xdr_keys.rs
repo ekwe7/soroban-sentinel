@@ -95,15 +95,32 @@ pub fn derive_persistent_key_from_scval(
     contract_id: &[u8; 32],
     key: ScVal,
 ) -> SentinelResult<String> {
+    derive_contract_data_key(contract_id, key, ContractDataDurability::Persistent)
+}
+
+/// Derives a contract data ledger key for the requested durability.
+pub fn derive_contract_data_key(
+    contract_id: &[u8; 32],
+    key: ScVal,
+    durability: ContractDataDurability,
+) -> SentinelResult<String> {
     let ledger_key = LedgerKey::ContractData(LedgerKeyContractData {
         contract: ScAddress::Contract(Hash(*contract_id)),
         key,
-        durability: ContractDataDurability::Persistent,
+        durability,
     });
 
     ledger_key.to_xdr_base64(Limits::none()).map_err(|e| {
-        SentinelError::SerializationError(format!("Failed to encode persistent key: {}", e))
+        SentinelError::SerializationError(format!("Failed to encode contract data key: {}", e))
     })
+}
+
+/// Derives the base64-encoded `LedgerKey` XDR for a temporary storage key given an `ScVal`.
+pub fn derive_temporary_key_from_scval(
+    contract_id: &[u8; 32],
+    key: ScVal,
+) -> SentinelResult<String> {
+    derive_contract_data_key(contract_id, key, ContractDataDurability::Temporary)
 }
 
 /// Derives the base64-encoded `LedgerKey` XDR for a persistent storage entry using a symbol string.
@@ -115,6 +132,14 @@ pub fn derive_persistent_symbol_key(
         SentinelError::InvalidXdrKey(format!("Invalid symbol '{}': {}", symbol, e))
     })?);
     derive_persistent_key_from_scval(contract_id, ScVal::Symbol(sc_symbol))
+}
+
+/// Derives the base64-encoded `LedgerKey` XDR for a temporary storage key using a symbol.
+pub fn derive_temporary_symbol_key(contract_id: &[u8; 32], symbol: &str) -> SentinelResult<String> {
+    let sc_symbol = ScSymbol(symbol.try_into().map_err(|e| {
+        SentinelError::InvalidXdrKey(format!("Invalid symbol '{}': {}", symbol, e))
+    })?);
+    derive_temporary_key_from_scval(contract_id, ScVal::Symbol(sc_symbol))
 }
 
 /// Derives the base64-encoded `LedgerKey` XDR for a persistent storage entry from a base64-encoded `ScVal`.
@@ -129,6 +154,20 @@ pub fn derive_persistent_xdr_key(
         ))
     })?;
     derive_persistent_key_from_scval(contract_id, key_scval)
+}
+
+/// Derives the base64-encoded `LedgerKey` XDR for a temporary key from a base64-encoded `ScVal`.
+pub fn derive_temporary_xdr_key(
+    contract_id: &[u8; 32],
+    scval_base64: &str,
+) -> SentinelResult<String> {
+    let key_scval = ScVal::from_xdr_base64(scval_base64, safe_xdr_limits()).map_err(|e| {
+        SentinelError::InvalidXdrKey(format!(
+            "Failed to decode base64 ScVal key '{}': {}",
+            scval_base64, e
+        ))
+    })?;
+    derive_temporary_key_from_scval(contract_id, key_scval)
 }
 
 #[cfg(test)]

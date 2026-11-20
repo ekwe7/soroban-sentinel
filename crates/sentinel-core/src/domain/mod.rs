@@ -1,6 +1,8 @@
 //! Core pure domain models and calculations.
 
+pub mod budget;
 pub mod bundle;
+pub mod code;
 pub mod cold_storage;
 pub mod compare;
 pub mod entry;
@@ -9,8 +11,15 @@ pub mod risk;
 pub mod scenario;
 pub mod ttl;
 
+pub use budget::{
+    calculate_budget, BudgetEntry, BudgetError, BudgetLineItem, BudgetReport, LEDGERS_PER_DAY,
+    STROOPS_PER_XLM,
+};
 pub use bundle::{
     plan_bundle_footprints, BundleError, BundleFootprint, MAX_BUNDLE_FOOTPRINT_ENTRIES,
+};
+pub use code::{
+    SorobanInterfaceVersion, WasmCodeInspection, WasmSectionSize, DEFAULT_MAX_WASM_SIZE_BYTES,
 };
 pub use compare::{
     compare_reports, BaselineDiff, BaselineDiffSummary, BaselineEntrySnapshot, BaselineSnapshot,
