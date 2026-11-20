@@ -4,6 +4,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::domain::burn_rate::{
+    calculate_burn_rate, LedgerCloseSample, DEFAULT_SAMPLE_WINDOW_LEDGERS,
+};
+use crate::domain::TARGET_LEDGER_CLOSE_SECONDS;
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
 
@@ -375,12 +379,27 @@ impl LedgerReader for SorobanRpcClient {
     }
 
     async fn get_ledger_close_velocity(&self, latest_ledger: u32) -> SentinelResult<Option<f64>> {
-        if latest_ledger < 2 {
+        let samples = self
+            .get_ledger_close_samples(latest_ledger, DEFAULT_SAMPLE_WINDOW_LEDGERS)
+            .await?;
+        Ok(samples.and_then(|samples| {
+            let burn_rate = calculate_burn_rate(&samples, TARGET_LEDGER_CLOSE_SECONDS);
+            burn_rate
+                .is_measured()
+                .then_some(burn_rate.seconds_per_ledger)
+        }))
+    }
+
+    async fn get_ledger_close_samples(
+        &self,
+        latest_ledger: u32,
+        sample_window: u32,
+    ) -> SentinelResult<Option<Vec<LedgerCloseSample>>> {
+        if latest_ledger < 2 || sample_window < 2 {
             return Ok(None);
         }
 
-        // Sample up to the last 100 ledgers
-        let sample_limit = 100u32;
+        let sample_limit = sample_window.min(latest_ledger);
         let start_ledger = latest_ledger.saturating_sub(sample_limit - 1).max(1);
 
         let params = GetLedgersParams {
@@ -396,31 +415,20 @@ impl LedgerReader for SorobanRpcClient {
             Err(_) => return Ok(None), // -32601 Method not found, or any transport error falls back
         };
 
-        if ledgers.len() < 2 {
-            return Ok(None);
-        }
+        let samples: Vec<LedgerCloseSample> = ledgers
+            .into_iter()
+            .filter_map(|ledger| {
+                ledger
+                    .ledger_close_time
+                    .filter(|close_time| *close_time > 0)
+                    .map(|close_time| LedgerCloseSample::new(ledger.sequence, close_time))
+            })
+            .collect();
 
-        let first = &ledgers[0];
-        let last = &ledgers[ledgers.len() - 1];
-
-        let (Some(t_first), Some(t_last)) = (first.ledger_close_time, last.ledger_close_time)
-        else {
-            return Ok(None);
-        };
-
-        if last.sequence <= first.sequence || t_last <= t_first {
-            return Ok(None);
-        }
-
-        let delta_seq = (last.sequence - first.sequence) as f64;
-        let delta_time = (t_last - t_first) as f64;
-        let velocity = delta_time / delta_seq;
-
-        // Plausibility check: between 1.0s and 60.0s
-        if (1.0..=60.0).contains(&velocity) {
-            Ok(Some(velocity))
-        } else {
+        if samples.len() < 2 {
             Ok(None)
+        } else {
+            Ok(Some(samples))
         }
     }
 }

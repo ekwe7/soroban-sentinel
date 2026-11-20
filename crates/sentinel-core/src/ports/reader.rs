@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::burn_rate::LedgerCloseSample;
 use crate::error::SentinelResult;
 
 /// Current health classification for a ledger reader endpoint.
@@ -82,6 +83,19 @@ pub trait LedgerReader: Send + Sync {
     /// Returns the measured ledger close velocity in seconds per ledger, if supported.
     async fn get_ledger_close_velocity(&self, latest_ledger: u32) -> SentinelResult<Option<f64>> {
         let _ = latest_ledger;
+        Ok(None)
+    }
+
+    /// Returns recent ledger close samples for burn rate calculation, if supported.
+    ///
+    /// Implementations may return `None` when historical ledger data is pruned
+    /// or unavailable. Callers should then fall back to the target velocity.
+    async fn get_ledger_close_samples(
+        &self,
+        latest_ledger: u32,
+        sample_window: u32,
+    ) -> SentinelResult<Option<Vec<LedgerCloseSample>>> {
+        let _ = (latest_ledger, sample_window);
         Ok(None)
     }
 }

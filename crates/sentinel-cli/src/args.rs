@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use sentinel_core::domain::DEFAULT_SAMPLE_WINDOW_LEDGERS;
 
 /// Autonomous storage TTL monitoring and expiry-risk detection for Soroban smart contracts.
 #[derive(Parser, Debug)]
@@ -82,6 +83,14 @@ pub struct ScanArgs {
     /// Override ledger close velocity in seconds per ledger (1.0–60.0)
     #[arg(long = "ledger-seconds", value_name = "SECS")]
     pub ledger_seconds: Option<f64>,
+
+    /// Number of recent ledgers sampled to measure storage burn velocity (2–10000)
+    #[arg(
+        long = "sample-window",
+        default_value_t = DEFAULT_SAMPLE_WINDOW_LEDGERS,
+        value_name = "N_LEDGERS"
+    )]
+    pub sample_window: u32,
 
     /// Path to a previous JSON scan report baseline file for comparison
     #[arg(long = "baseline", value_name = "PATH")]
@@ -215,6 +224,7 @@ mod tests {
                 assert!(scan.rpc_timeout.is_none());
                 assert!(scan.rpc_max_retries.is_none());
                 assert!(scan.ledger_seconds.is_none());
+                assert_eq!(scan.sample_window, DEFAULT_SAMPLE_WINDOW_LEDGERS);
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
             }
@@ -254,6 +264,8 @@ mod tests {
             "5",
             "--ledger-seconds",
             "5.5",
+            "--sample-window",
+            "250",
             "--baseline",
             "baseline.json",
             "--fail-on-regression",
@@ -279,6 +291,7 @@ mod tests {
                 assert_eq!(scan.rpc_timeout, Some(30));
                 assert_eq!(scan.rpc_max_retries, Some(5));
                 assert_eq!(scan.ledger_seconds, Some(5.5));
+                assert_eq!(scan.sample_window, 250);
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
             }

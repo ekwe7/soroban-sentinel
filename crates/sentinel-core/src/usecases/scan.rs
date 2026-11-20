@@ -11,6 +11,7 @@ use crate::adapters::{
     extract_sac_asset_info, extract_wasm_hash_from_instance_entry, parse_contract_id,
     parse_key_expr, safe_xdr_limits,
 };
+use crate::domain::burn_rate::{calculate_burn_rate, BurnRate, DEFAULT_SAMPLE_WINDOW_LEDGERS};
 use crate::domain::cold_storage::{
     recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
 };
@@ -39,6 +40,13 @@ pub struct ScanRequest {
     pub network: Option<String>,
     /// Optional override for ledger close velocity in seconds per ledger.
     pub ledger_seconds_override: Option<f64>,
+    /// Number of recent ledgers sampled when measuring burn velocity.
+    #[serde(default = "default_sample_window")]
+    pub sample_window: u32,
+}
+
+fn default_sample_window() -> u32 {
+    DEFAULT_SAMPLE_WINDOW_LEDGERS
 }
 
 impl ScanRequest {
@@ -52,6 +60,7 @@ impl ScanRequest {
             threshold_config: ThresholdConfig::default(),
             network: None,
             ledger_seconds_override: None,
+            sample_window: DEFAULT_SAMPLE_WINDOW_LEDGERS,
         }
     }
 
@@ -88,6 +97,12 @@ impl ScanRequest {
     /// Set an optional ledger close velocity override.
     pub fn with_ledger_seconds(mut self, ledger_seconds: Option<f64>) -> Self {
         self.ledger_seconds_override = ledger_seconds;
+        self
+    }
+
+    /// Set the number of recent ledgers sampled to measure burn velocity.
+    pub fn with_sample_window(mut self, sample_window: u32) -> Self {
+        self.sample_window = sample_window;
         self
     }
 }
@@ -182,6 +197,9 @@ pub struct TTLReport {
     pub latest_ledger: u32,
     /// Estimated seconds per ledger close (typically 5.0s).
     pub ledger_velocity_seconds: f64,
+    /// Observed storage burn velocity and sampling metadata.
+    #[serde(default)]
+    pub burn_rate: BurnRate,
     /// Individual reports for all monitored storage entries.
     pub entries: Vec<StorageEntryReport>,
     /// Aggregate overall risk status for the contract.
@@ -348,19 +366,25 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         // 1. Derive deterministic ContractInstance key
         let instance_key_xdr = derive_contract_instance_key(&contract_id_bytes)?;
 
-        // Resolve ledger close velocity: explicit CLI override, or query getLedgers from RPC, or default 5.0s
-        let ledger_velocity = if let Some(ov) = request.ledger_seconds_override {
-            if (1.0..=60.0).contains(&ov) {
-                ov
-            } else {
-                TARGET_LEDGER_CLOSE_SECONDS
-            }
+        // Resolve storage burn velocity: explicit CLI override, historical
+        // ledger close samples, a legacy single velocity measurement, or the
+        // standard 5.0s target when RPC history is pruned or unavailable.
+        let burn_rate = if let Some(override_seconds) = request.ledger_seconds_override {
+            BurnRate::measured(override_seconds)
         } else {
-            match self.reader.get_ledger_close_velocity(latest_ledger).await {
-                Ok(Some(v)) if (1.0..=60.0).contains(&v) => v,
-                _ => TARGET_LEDGER_CLOSE_SECONDS,
+            match self
+                .reader
+                .get_ledger_close_samples(latest_ledger, request.sample_window)
+                .await
+            {
+                Ok(Some(samples)) => calculate_burn_rate(&samples, TARGET_LEDGER_CLOSE_SECONDS),
+                _ => match self.reader.get_ledger_close_velocity(latest_ledger).await {
+                    Ok(Some(velocity)) => BurnRate::measured(velocity),
+                    _ => BurnRate::fallback(),
+                },
             }
         };
+        let ledger_velocity = burn_rate.seconds_per_ledger;
 
         // 2. Derive persistent keys from symbols, base64 ScVal, and typed key expressions
         let mut persistent_descriptors: Vec<(String, String)> = Vec::new();
@@ -569,6 +593,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             network,
             latest_ledger,
             ledger_velocity_seconds: ledger_velocity,
+            burn_rate,
             entries: reports,
             overall_status,
             archival_recommendations,
@@ -586,6 +611,7 @@ mod tests {
         ScContractInstance, ScSymbol, ScVal,
     };
 
+    use crate::domain::burn_rate::{BurnRateSource, LedgerCloseSample};
     use crate::ports::mock::MockLedgerReader;
     use crate::ports::reader::RawLedgerEntry;
 
@@ -981,11 +1007,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_scan_with_historical_samples_uses_measured_burn_rate() {
     async fn test_scan_stellar_asset_contract_extracts_sac_metadata() {
         let contract_bytes = [60u8; 32];
         let contract_strkey = stellar_strkey::Contract(contract_bytes).to_string();
 
         let instance_key = derive_contract_instance_key(&contract_bytes).unwrap();
+        let instance_xdr = make_test_instance_xdr(contract_bytes, [61u8; 32]);
+        let instance_raw = RawLedgerEntry::new(&instance_key, &instance_xdr, 5_500_000, 5_400_000);
+
+        // Ledgers 100, 200 and 300 closed after 1000, 1550 and 2100 seconds:
+        // an exactly 5.5s/ledger linear trend.
+        let samples = vec![
+            LedgerCloseSample::new(100, 1_000),
+            LedgerCloseSample::new(200, 1_550),
+            LedgerCloseSample::new(300, 2_100),
+        ];
+        let mock_reader = MockLedgerReader::new()
+            .with_latest_ledger(5_400_000, 22)
+            .with_close_samples(samples)
+            .with_entry(instance_raw);
+
+        let usecase = ScanContractUseCase::new(mock_reader);
+        let request = ScanRequest::new(&contract_strkey).with_sample_window(250);
+
+        let report = usecase.execute(request).await.unwrap();
+
+        assert_eq!(report.ledger_velocity_seconds, 5.5);
+        assert_eq!(report.burn_rate.source, BurnRateSource::Measured);
+        assert_eq!(report.burn_rate.sample_count, 3);
+        assert_eq!(report.burn_rate.observed_ledgers, 200);
+        assert_eq!(report.burn_rate.latest_close_time, Some(2_100));
+
+        let inst = &report.entries[0];
+        assert_eq!(inst.estimated_remaining_seconds, 550_000.0);
         let entry_data = LedgerEntryData::ContractData(ContractDataEntry {
             ext: ExtensionPoint::V0,
             contract: ScAddress::Contract(Hash(contract_bytes)),
