@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use sentinel_core::adapters::{validate_rpc_url, SorobanRpcClient};
 use sentinel_core::domain::compare::{compare_reports, BaselineSnapshot, MAX_BASELINE_FILE_BYTES};
-use sentinel_core::domain::{RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS};
+use sentinel_core::domain::{
+    InstanceSizeThresholds, RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
+};
 use sentinel_core::error::SentinelError;
-use sentinel_core::usecases::{ScanContractUseCase, ScanRequest};
+use sentinel_core::usecases::{ScanContractUseCase, ScanRequest, TTLReport};
 
 use crate::args::{OutputFormat, ScanArgs};
 use crate::formatters::{
@@ -122,6 +124,22 @@ pub fn load_and_validate_baseline(
     Ok(snapshot)
 }
 
+/// Prints a stderr note when instance-storage utilisation could not be computed because the
+/// network entry-size limit was unavailable. Stdout stays machine-readable.
+pub(crate) fn warn_if_entry_size_limit_unavailable(report: &TTLReport) {
+    let limit_missing = report.entries.iter().any(|entry| {
+        entry
+            .instance_storage
+            .as_ref()
+            .is_some_and(|metrics| metrics.max_entry_size_bytes.is_none())
+    });
+    if limit_missing {
+        eprintln!(
+            "Note: the network max_contract_data_entry_bytes limit could not be fetched; instance storage utilisation is omitted."
+        );
+    }
+}
+
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
 pub async fn run_scan(args: ScanArgs) -> i32 {
     // 1. Validate argument bounds before making any RPC calls
@@ -183,6 +201,17 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         }
     };
 
+    let instance_size_thresholds = match InstanceSizeThresholds::try_new(
+        args.instance_size_warn_pct,
+        args.instance_size_critical_pct,
+    ) {
+        Ok(thresholds) => thresholds,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            return EXIT_INVALID_ARGS;
+        }
+    };
+
     let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
     let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
     if let Some(retries) = args.rpc_max_retries {
@@ -196,6 +225,7 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
     let mut request = ScanRequest::new(&args.contract_id)
         .with_network(&args.network)
         .with_threshold_config(threshold_config)
+        .with_instance_size_thresholds(instance_size_thresholds)
         .with_persistent_symbols(args.key)
         .with_persistent_xdr_keys(args.key_xdr)
         .with_persistent_key_exprs(args.key_expr)
@@ -222,6 +252,8 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
             };
         }
     };
+
+    warn_if_entry_size_limit_unavailable(&report);
 
     let baseline_diff = baseline_snapshot
         .as_ref()

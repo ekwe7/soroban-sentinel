@@ -810,3 +810,167 @@ async fn test_cli_scan_markdown_and_prometheus_exit_codes() {
         )));
     }
 }
+
+/// Runs `sentinel scan` against `server` in the given output format.
+fn scan_instance_storage_cmd(
+    server: &MockServer,
+    contract_strkey: &str,
+    format: &str,
+) -> std::process::Output {
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            contract_strkey,
+            "--rpc-url",
+            &server.uri(),
+            "--format",
+            format,
+        ])
+        .output()
+        .unwrap()
+}
+
+/// Instance entry XDR holding `keys` storage values of 1,000 bytes, and its serialized size.
+fn instance_storage_xdr(contract_id: [u8; 32], keys: u32) -> (String, usize) {
+    let xdr = common::instance_entry_xdr(contract_id, Some(common::storage_map(keys, 1_000)));
+    let size = sentinel_core::adapters::extract_instance_storage_stats(&xdr)
+        .unwrap()
+        .entry_size_bytes;
+    (xdr, size)
+}
+
+/// Serves the instance entry with a healthy TTL, plus the network entry-size limit if given.
+async fn mount_instance_storage(
+    server: &MockServer,
+    contract_id: [u8; 32],
+    instance_xdr: String,
+    limit: Option<u32>,
+) {
+    let mut entries = vec![(
+        derive_contract_instance_key(&contract_id).unwrap(),
+        instance_xdr,
+        5_900_000,
+    )];
+    entries.extend(limit.map(common::entry_size_limit_entry));
+    common::mount_ledger(server, 5_400_000, entries).await;
+}
+
+// Instance storage well under the network limit -> OK, metrics in text and JSON
+#[tokio::test]
+async fn test_cli_scan_instance_storage_ok() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [90u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, _) = instance_storage_xdr(contract_id, 2);
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, Some(65_536)).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(0));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(stdout.contains("Instance storage: 2 keys,"));
+    assert!(stdout.contains("of the 65,536 B network entry-size limit"));
+    assert!(!stdout.contains("instance storage SIZE"));
+    assert!(text.stderr.is_empty());
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(0));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let metrics = &parsed["entries"][0]["instance_storage"];
+    assert_eq!(metrics["key_count"], 2);
+    assert_eq!(metrics["max_entry_size_bytes"], 65_536);
+    assert_eq!(metrics["size_status"], "ok");
+}
+
+// Instance storage at ~80% of the limit -> WARN from size (exit 1) although TTL is healthy
+#[tokio::test]
+async fn test_cli_scan_instance_storage_warn() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [91u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, size) = instance_storage_xdr(contract_id, 60);
+    let limit = (size * 5 / 4) as u32;
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, Some(limit)).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(1));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(stdout.contains("Instance storage: 60 keys,"));
+    assert!(stdout.contains("(80.0%)"));
+    assert!(stdout.contains("WARN (instance storage SIZE)"));
+    assert!(stdout.contains("This status is caused by entry size, not TTL."));
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(1));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let instance = &parsed["entries"][0];
+    assert_eq!(instance["status"], "warn");
+    assert_eq!(instance["instance_storage"]["size_status"], "warn");
+    assert_eq!(instance["instance_storage"]["utilization_pct"], 80.0);
+}
+
+// Network limit unavailable -> scan succeeds, size and count reported, utilisation omitted
+#[tokio::test]
+async fn test_cli_scan_instance_storage_limit_unavailable() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [92u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, _) = instance_storage_xdr(contract_id, 60);
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, None).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(0));
+    assert!(String::from_utf8(text.stdout)
+        .unwrap()
+        .contains("Instance storage: 60 keys,"));
+    assert!(String::from_utf8(text.stderr)
+        .unwrap()
+        .contains("max_contract_data_entry_bytes limit could not be fetched"));
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(0));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let metrics = &parsed["entries"][0]["instance_storage"];
+    assert_eq!(metrics["key_count"], 60);
+    assert!(metrics["entry_size_bytes"].as_u64().unwrap() > 60_000);
+    assert!(metrics.get("utilization_pct").is_none());
+    assert!(String::from_utf8(json.stderr)
+        .unwrap()
+        .contains("utilisation is omitted"));
+}
+
+// Invalid instance-size percentages are rejected with exit 10 before any RPC request
+#[tokio::test]
+async fn test_cli_scan_invalid_instance_size_pcts_rejected_before_rpc() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+    let contract_strkey = stellar_strkey::Contract([93u8; 32]).to_string();
+
+    for (warn, critical) in [
+        ("90", "75"),
+        ("0", "50"),
+        ("75", "101"),
+        ("80", "80"),
+        ("75", "300"),
+    ] {
+        Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--instance-size-warn-pct",
+                warn,
+                "--instance-size-critical-pct",
+                critical,
+            ])
+            .assert()
+            .code(10);
+    }
+    mock_server.verify().await;
+}

@@ -94,6 +94,22 @@ pub struct ScanArgs {
     #[arg(long, value_name = "LEDGERS")]
     pub critical_threshold: Option<u32>,
 
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises WARN
+    #[arg(
+        long = "instance-size-warn-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_WARN_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_warn_pct: u8,
+
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises CRITICAL
+    #[arg(
+        long = "instance-size-critical-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_CRITICAL_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_critical_pct: u8,
+
     /// Custom RPC request timeout in seconds (1–120, defaults to 10)
     #[arg(long = "rpc-timeout", value_name = "SECS")]
     pub rpc_timeout: Option<u64>,
@@ -215,6 +231,8 @@ mod tests {
                 assert!(scan.key_expr.is_empty());
                 assert!(scan.temp_key.is_empty());
                 assert!(scan.temp_key_xdr.is_empty());
+                assert_eq!(scan.instance_size_warn_pct, 75);
+                assert_eq!(scan.instance_size_critical_pct, 90);
                 assert!(scan.rpc_timeout.is_none());
                 assert!(scan.rpc_max_retries.is_none());
                 assert!(scan.ledger_seconds.is_none());

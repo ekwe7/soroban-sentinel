@@ -2,7 +2,7 @@
 
 use sentinel_core::usecases::{StorageEntryReport, TTLReport};
 
-use super::text::{entry_note, format_entry_description, format_with_commas};
+use super::text::{entry_notes, format_entry_description, format_with_commas};
 
 /// Escapes text for use in GFM table cells and inline prose.
 ///
@@ -76,7 +76,7 @@ pub fn render_markdown(report: &TTLReport) -> String {
     let notes: Vec<String> = report
         .entries
         .iter()
-        .filter_map(entry_note)
+        .flat_map(entry_notes)
         .map(|note| format!("- {}", escape_markdown(&note)))
         .collect();
     if !notes.is_empty() {

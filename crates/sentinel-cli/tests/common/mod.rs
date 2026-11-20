@@ -5,10 +5,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use sentinel_core::adapters::derive_contract_data_entry_size_limit_key;
 use serde_json::{json, Value};
 use stellar_xdr::curr::{
-    ContractDataDurability, ContractDataEntry, ContractExecutable, ExtensionPoint, Hash,
-    LedgerEntryData, Limits, ScAddress, ScContractInstance, ScMap, ScVal, WriteXdr,
+    ConfigSettingEntry, ContractDataDurability, ContractDataEntry, ContractExecutable,
+    ExtensionPoint, Hash, LedgerEntryData, Limits, ScAddress, ScBytes, ScContractInstance, ScMap,
+    ScMapEntry, ScVal, WriteXdr,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -30,6 +32,28 @@ pub fn instance_entry_xdr(contract_id: [u8; 32], storage: Option<ScMap>) -> Stri
     })
     .to_xdr_base64(Limits::none())
     .unwrap()
+}
+
+/// An instance storage map of `keys` entries, each holding `value_bytes` bytes.
+pub fn storage_map(keys: u32, value_bytes: usize) -> ScMap {
+    let entries: Vec<ScMapEntry> = (0..keys)
+        .map(|i| ScMapEntry {
+            key: ScVal::U32(i),
+            val: ScVal::Bytes(ScBytes(vec![0x42; value_bytes].try_into().unwrap())),
+        })
+        .collect();
+    ScMap(entries.try_into().unwrap())
+}
+
+/// The network `ContractDataEntrySizeBytes` config-setting entry with the given limit.
+pub fn entry_size_limit_entry(limit: u32) -> ServedEntry {
+    (
+        derive_contract_data_entry_size_limit_key().unwrap(),
+        LedgerEntryData::ConfigSetting(ConfigSettingEntry::ContractDataEntrySizeBytes(limit))
+            .to_xdr_base64(Limits::none())
+            .unwrap(),
+        0,
+    )
 }
 
 /// Base64 `LedgerEntryData` for a contract-data entry.

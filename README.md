@@ -297,11 +297,36 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
       "remaining_ledgers": 3002723,
       "estimated_remaining_seconds": 15013615.0,
       "estimated_remaining_days": 173.77,
-      "status": "ok"
+      "status": "ok",
+      "instance_storage": {
+        "key_count": 4,
+        "entry_size_bytes": 248,
+        "max_entry_size_bytes": 65536,
+        "utilization_pct": 0.38,
+        "size_status": "ok"
+      }
     }
   ]
 }
 ```
+
+### Instance Storage Size
+Every value a contract keeps in instance storage grows one ledger entry. When that entry reaches the
+network's maximum contract-data entry size (`max_contract_data_entry_bytes`), writes start failing, which
+is a different failure from TTL expiry. Each scan reports the instance's storage key count, its serialized
+entry size and its utilisation of the network limit, and raises the instance entry's status (and so the exit
+code) when utilisation crosses a threshold. The text output says when the cause is size rather than TTL.
+
+```bash
+# Defaults: WARN at 75%, CRITICAL at 90% (must satisfy 0 < warn < critical <= 100)
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --instance-size-warn-pct 70 \
+  --instance-size-critical-pct 85
+```
+
+The limit is read from the network's `ContractDataEntrySizeBytes` config setting in the same
+`getLedgerEntries` request as the scanned keys. If it cannot be fetched, the scan still succeeds, reports the
+size and key count, omits utilisation and prints a note on stderr.
 
 ### Markdown and Prometheus Output
 `--format` accepts `text` (default), `json`, `sarif`, `markdown`, and `prometheus`. An unknown value is

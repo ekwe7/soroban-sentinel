@@ -134,7 +134,7 @@ pub fn render_text(report: &TTLReport) -> String {
     let notes: String = report
         .entries
         .iter()
-        .filter_map(entry_note)
+        .flat_map(entry_notes)
         .map(|note| format!("\n{}", note))
         .collect();
 
@@ -149,14 +149,42 @@ pub fn render_text(report: &TTLReport) -> String {
     format!("{}\n{}\n{}{}", header_line, table, summary_line, notes)
 }
 
-/// Explains statuses the table alone cannot convey, such as an unrecoverable temporary entry.
-pub(crate) fn entry_note(entry: &StorageEntryReport) -> Option<String> {
-    entry.is_unrecoverable().then(|| {
-        format!(
+/// Explains what the table alone cannot convey: an unrecoverable temporary entry, and the
+/// instance-storage size metrics (including when size, not TTL, raised the status).
+pub(crate) fn entry_notes(entry: &StorageEntryReport) -> Vec<String> {
+    let mut notes = Vec::new();
+    if entry.is_unrecoverable() {
+        notes.push(format!(
             "UNRECOVERABLE: {} is missing or expired. Temporary entries are deleted permanently and cannot be restored.",
             format_entry_description(&entry.key_identifier)
-        )
-    })
+        ));
+    }
+    if let Some(metrics) = &entry.instance_storage {
+        let size = match (metrics.max_entry_size_bytes, metrics.utilization_pct) {
+            (Some(limit), Some(pct)) => format!(
+                "{} B of the {} B network entry-size limit ({:.1}%)",
+                format_with_commas(metrics.entry_size_bytes),
+                format_with_commas(limit),
+                pct
+            ),
+            _ => format!(
+                "{} B (network entry-size limit unavailable; utilisation omitted)",
+                format_with_commas(metrics.entry_size_bytes)
+            ),
+        };
+        notes.push(format!(
+            "Instance storage: {} keys, {}.",
+            format_with_commas(metrics.key_count),
+            size
+        ));
+        if metrics.size_status != RiskLevel::Ok {
+            notes.push(format!(
+                "{} (instance storage SIZE): the instance entry is approaching the network's maximum contract-data entry size, so storage writes may start failing. This status is caused by entry size, not TTL.",
+                metrics.size_status
+            ));
+        }
+    }
+    notes
 }
 
 /// Formats a change category into a styled table cell.
@@ -453,5 +481,69 @@ mod tests {
         // A live temporary entry and an archived persistent entry are not unrecoverable.
         assert!(!output.contains("UNRECOVERABLE: Temporary Key: NONCE"));
         assert!(!output.contains("UNRECOVERABLE: Persistent Key: Gone"));
+    }
+
+    fn instance_with_metrics(
+        status: RiskLevel,
+        metrics: sentinel_core::usecases::InstanceStorageReport,
+    ) -> TTLReport {
+        let mut entry = StorageEntryReport::new(
+            "instance",
+            EntryType::ContractInstance,
+            Durability::Instance,
+            52_000,
+            5_900_000,
+            500_000,
+            2_500_000.0,
+            28.9,
+            status,
+        );
+        entry.instance_storage = Some(metrics);
+        TTLReport {
+            contract_id: "CSIZE".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![entry],
+            overall_status: status,
+            archival_recommendations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_render_text_instance_storage_size_warning_names_size_as_cause() {
+        let output = render_text(&instance_with_metrics(
+            RiskLevel::Warn,
+            sentinel_core::usecases::InstanceStorageReport {
+                key_count: 60,
+                entry_size_bytes: 52_429,
+                max_entry_size_bytes: Some(65_536),
+                utilization_pct: Some(80.0),
+                size_status: RiskLevel::Warn,
+            },
+        ));
+        assert!(output.contains(
+            "Instance storage: 60 keys, 52,429 B of the 65,536 B network entry-size limit (80.0%)."
+        ));
+        assert!(output.contains("WARN (instance storage SIZE)"));
+        assert!(output.contains("This status is caused by entry size, not TTL."));
+    }
+
+    #[test]
+    fn test_render_text_instance_storage_without_limit() {
+        let output = render_text(&instance_with_metrics(
+            RiskLevel::Ok,
+            sentinel_core::usecases::InstanceStorageReport {
+                key_count: 3,
+                entry_size_bytes: 400,
+                max_entry_size_bytes: None,
+                utilization_pct: None,
+                size_status: RiskLevel::Ok,
+            },
+        ));
+        assert!(output.contains(
+            "Instance storage: 3 keys, 400 B (network entry-size limit unavailable; utilisation omitted)."
+        ));
+        assert!(!output.contains("instance storage SIZE"));
     }
 }

@@ -6,18 +6,19 @@ use serde::{Deserialize, Serialize};
 use stellar_xdr::curr::{ReadXdr, WriteXdr};
 
 use crate::adapters::{
-    derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
-    derive_persistent_symbol_key, derive_persistent_xdr_key, derive_temporary_symbol_key,
-    derive_temporary_xdr_key, extract_wasm_hash_from_instance_entry, parse_contract_id,
-    parse_key_expr, safe_xdr_limits,
+    derive_contract_code_key, derive_contract_data_entry_size_limit_key,
+    derive_contract_instance_key, derive_persistent_key_from_scval, derive_persistent_symbol_key,
+    derive_persistent_xdr_key, derive_temporary_symbol_key, derive_temporary_xdr_key,
+    extract_contract_data_entry_size_limit, extract_instance_storage_stats,
+    extract_wasm_hash_from_instance_entry, parse_contract_id, parse_key_expr, safe_xdr_limits,
 };
 use crate::domain::cold_storage::{
     recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
 };
 use crate::domain::{
     calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
-    evaluate_risk, Durability, EntryType, RiskLevel, StorageEntry, ThresholdConfig,
-    TARGET_LEDGER_CLOSE_SECONDS,
+    evaluate_risk, Durability, EntryType, InstanceSizeThresholds, RiskLevel, StorageEntry,
+    ThresholdConfig, TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -41,6 +42,9 @@ pub struct ScanRequest {
     pub temporary_xdr_keys: Vec<String>,
     /// Threshold configuration for warning and critical expiry evaluation.
     pub threshold_config: ThresholdConfig,
+    /// Instance-storage utilisation thresholds against the network entry-size limit.
+    #[serde(default)]
+    pub instance_size_thresholds: InstanceSizeThresholds,
     /// Target network descriptor (e.g. "testnet", "mainnet", etc.).
     pub network: Option<String>,
     /// Optional override for ledger close velocity in seconds per ledger.
@@ -58,6 +62,7 @@ impl ScanRequest {
             temporary_symbols: Vec::new(),
             temporary_xdr_keys: Vec::new(),
             threshold_config: ThresholdConfig::default(),
+            instance_size_thresholds: InstanceSizeThresholds::default(),
             network: None,
             ledger_seconds_override: None,
         }
@@ -96,6 +101,12 @@ impl ScanRequest {
     /// Set a custom threshold configuration.
     pub fn with_threshold_config(mut self, threshold_config: ThresholdConfig) -> Self {
         self.threshold_config = threshold_config;
+        self
+    }
+
+    /// Set custom instance-storage utilisation thresholds.
+    pub fn with_instance_size_thresholds(mut self, thresholds: InstanceSizeThresholds) -> Self {
+        self.instance_size_thresholds = thresholds;
         self
     }
 
@@ -151,6 +162,28 @@ pub struct StorageEntryReport {
     pub remaining_days: f64,
     /// Risk status classification.
     pub status: RiskLevel,
+    /// Instance-storage size metrics; present only on a found contract instance entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_storage: Option<InstanceStorageReport>,
+}
+
+/// Instance-storage size metrics for a contract instance entry.
+///
+/// Instance storage lives in a single ledger entry, so it fails differently from TTL expiry:
+/// once the entry reaches the network's maximum contract-data entry size, writes start failing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstanceStorageReport {
+    /// Number of keys in the instance storage map.
+    pub key_count: u32,
+    /// Serialized size of the instance ledger entry in bytes.
+    pub entry_size_bytes: usize,
+    /// Network `max_contract_data_entry_bytes`, or `None` if it could not be fetched.
+    pub max_entry_size_bytes: Option<u32>,
+    /// `entry_size_bytes` as a percentage of `max_entry_size_bytes`; `None` without the limit.
+    pub utilization_pct: Option<f64>,
+    /// Status from entry size alone (`Ok` when utilisation is unknown). The entry's overall
+    /// `status` is the worse of this and its TTL status.
+    pub size_status: RiskLevel,
 }
 
 impl StorageEntryReport {
@@ -177,6 +210,7 @@ impl StorageEntryReport {
             estimated_remaining_seconds,
             remaining_days,
             status,
+            instance_storage: None,
         }
     }
 
@@ -253,6 +287,25 @@ pub fn compute_overall_status(entries: &[StorageEntryReport]) -> RiskLevel {
         RiskLevel::Warn
     } else {
         RiskLevel::Ok
+    }
+}
+
+/// Builds instance-storage metrics, classifying utilisation when the network limit is known.
+fn instance_storage_report(
+    key_count: u32,
+    entry_size_bytes: usize,
+    max_entry_size_bytes: Option<u32>,
+    thresholds: &InstanceSizeThresholds,
+) -> InstanceStorageReport {
+    let utilization_pct = max_entry_size_bytes
+        .filter(|&limit| limit > 0)
+        .map(|limit| entry_size_bytes as f64 * 100.0 / f64::from(limit));
+    InstanceStorageReport {
+        key_count,
+        entry_size_bytes,
+        max_entry_size_bytes,
+        utilization_pct,
+        size_status: utilization_pct.map_or(RiskLevel::Ok, |pct| thresholds.evaluate(pct)),
     }
 }
 
@@ -349,6 +402,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
     pub async fn execute(&self, request: ScanRequest) -> SentinelResult<TTLReport> {
         let contract_id_bytes = parse_contract_id(&request.contract_id_strkey)?;
         request.threshold_config.validate()?;
+        request.instance_size_thresholds.validate()?;
         let latest_ledger_info = self.reader.get_latest_ledger().await?;
         let latest_ledger = latest_ledger_info.sequence;
 
@@ -414,14 +468,21 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             ));
         }
 
-        // 3. Query initial batch: instance key + every contract-data key
-        let mut query_keys: Vec<String> = Vec::with_capacity(1 + data_descriptors.len());
+        // 3. Query initial batch: instance key + every contract-data key + the network's
+        // maximum contract-data entry size (a config-setting entry, so no extra RPC call)
+        let entry_size_limit_key = derive_contract_data_entry_size_limit_key()?;
+        let mut query_keys: Vec<String> = Vec::with_capacity(2 + data_descriptors.len());
         query_keys.push(instance_key_xdr.clone());
         for descriptor in &data_descriptors {
             query_keys.push(descriptor.key_xdr.clone());
         }
+        query_keys.push(entry_size_limit_key.clone());
 
         let raw_entries = self.reader.get_ledger_entries(&query_keys).await?;
+        let max_entry_size_bytes = raw_entries
+            .iter()
+            .find(|e| e.key_xdr_base64 == entry_size_limit_key)
+            .and_then(|e| extract_contract_data_entry_size_limit(&e.entry_xdr_base64).ok());
 
         let mut reports = Vec::new();
 
@@ -439,9 +500,24 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             let remaining_seconds =
                 estimate_remaining_seconds_with_velocity(remaining_ledgers, ledger_velocity);
             let remaining_days = estimate_remaining_days(remaining_seconds);
-            let status = evaluate_risk(remaining_ledgers, &request.threshold_config);
+            let ttl_status = evaluate_risk(remaining_ledgers, &request.threshold_config);
 
-            reports.push(StorageEntryReport::new(
+            // Malformed storage leaves size metrics out rather than failing the scan.
+            let instance_storage = extract_instance_storage_stats(&entry.entry_xdr_base64)
+                .ok()
+                .map(|stats| {
+                    instance_storage_report(
+                        stats.key_count,
+                        stats.entry_size_bytes,
+                        max_entry_size_bytes,
+                        &request.instance_size_thresholds,
+                    )
+                });
+            let status = instance_storage
+                .as_ref()
+                .map_or(ttl_status, |metrics| ttl_status.max(metrics.size_status));
+
+            let mut report = StorageEntryReport::new(
                 "instance",
                 EntryType::ContractInstance,
                 Durability::Instance,
@@ -451,7 +527,9 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 remaining_seconds,
                 remaining_days,
                 status,
-            ));
+            );
+            report.instance_storage = instance_storage;
+            reports.push(report);
 
             // Extract WASM hash if executable is WASM bytecode
             wasm_hash_opt = extract_wasm_hash_from_instance_entry(&entry.entry_xdr_base64)
@@ -1006,6 +1084,184 @@ mod tests {
         assert!(matches!(
             usecase.execute(bad_xdr).await,
             Err(crate::error::SentinelError::InvalidXdrKey(_))
+        ));
+    }
+
+    /// A Stellar Asset instance entry whose storage map holds `keys` byte values of `value_bytes`.
+    fn make_instance_with_storage_xdr(
+        contract_id: [u8; 32],
+        keys: u32,
+        value_bytes: usize,
+    ) -> String {
+        use stellar_xdr::curr::{ScBytes, ScMap, ScMapEntry};
+        let entries: Vec<ScMapEntry> = (0..keys)
+            .map(|i| ScMapEntry {
+                key: ScVal::U32(i),
+                val: ScVal::Bytes(ScBytes(vec![0x11; value_bytes].try_into().unwrap())),
+            })
+            .collect();
+        LedgerEntryData::ContractData(ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(Hash(contract_id)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::ContractInstance(ScContractInstance {
+                executable: ContractExecutable::StellarAsset,
+                storage: Some(ScMap(entries.try_into().unwrap())),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap()
+    }
+
+    fn entry_size_limit_raw(limit: u32) -> RawLedgerEntry {
+        let entry = LedgerEntryData::ConfigSetting(
+            stellar_xdr::curr::ConfigSettingEntry::ContractDataEntrySizeBytes(limit),
+        )
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        RawLedgerEntry::new(
+            derive_contract_data_entry_size_limit_key().unwrap(),
+            entry,
+            0,
+            0,
+        )
+    }
+
+    async fn scan_instance(
+        contract_bytes: [u8; 32],
+        instance_xdr: &str,
+        limit: Option<u32>,
+    ) -> TTLReport {
+        let instance_key = derive_contract_instance_key(&contract_bytes).unwrap();
+        // 500,000 ledgers of TTL left: always OK on TTL alone.
+        let mut reader = MockLedgerReader::new()
+            .with_latest_ledger(5_400_000, 22)
+            .with_entry(RawLedgerEntry::new(
+                &instance_key,
+                instance_xdr,
+                5_900_000,
+                5_400_000,
+            ));
+        if let Some(limit) = limit {
+            reader = reader.with_entry(entry_size_limit_raw(limit));
+        }
+        ScanContractUseCase::new(reader)
+            .execute(ScanRequest::new(
+                stellar_strkey::Contract(contract_bytes).to_string(),
+            ))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_scan_reports_instance_storage_for_empty_and_small_maps() {
+        let contract_bytes = [80u8; 32];
+        let empty = scan_instance(
+            contract_bytes,
+            &make_test_stellar_asset_instance_xdr(contract_bytes),
+            Some(65_536),
+        )
+        .await;
+        let metrics = empty.entries[0].instance_storage.clone().unwrap();
+        assert_eq!(metrics.key_count, 0);
+        assert_eq!(metrics.max_entry_size_bytes, Some(65_536));
+        assert!(metrics.utilization_pct.unwrap() < 1.0);
+        assert_eq!(metrics.size_status, RiskLevel::Ok);
+        assert_eq!(empty.entries[0].status, RiskLevel::Ok);
+
+        let small = scan_instance(
+            contract_bytes,
+            &make_instance_with_storage_xdr(contract_bytes, 4, 16),
+            Some(65_536),
+        )
+        .await;
+        let metrics = small.entries[0].instance_storage.clone().unwrap();
+        assert_eq!(metrics.key_count, 4);
+        assert_eq!(metrics.size_status, RiskLevel::Ok);
+        assert_eq!(small.overall_status, RiskLevel::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_scan_near_limit_instance_storage_raises_status() {
+        let contract_bytes = [81u8; 32];
+        let instance_xdr = make_instance_with_storage_xdr(contract_bytes, 60, 1_000);
+        let size = extract_instance_storage_stats(&instance_xdr)
+            .unwrap()
+            .entry_size_bytes as u32;
+
+        // size is 80% of the limit -> WARN (75 <= 80 < 90), though TTL is OK
+        let warn = scan_instance(contract_bytes, &instance_xdr, Some(size * 5 / 4)).await;
+        let instance = &warn.entries[0];
+        let metrics = instance.instance_storage.clone().unwrap();
+        assert_eq!(metrics.key_count, 60);
+        assert_eq!(metrics.entry_size_bytes, size as usize);
+        assert!((metrics.utilization_pct.unwrap() - 80.0).abs() < 0.01);
+        assert_eq!(metrics.size_status, RiskLevel::Warn);
+        assert_eq!(instance.status, RiskLevel::Warn);
+        assert_eq!(warn.overall_status, RiskLevel::Warn);
+
+        // the entry fills the whole limit -> CRITICAL
+        let critical = scan_instance(contract_bytes, &instance_xdr, Some(size)).await;
+        assert_eq!(
+            critical.entries[0]
+                .instance_storage
+                .as_ref()
+                .unwrap()
+                .size_status,
+            RiskLevel::Critical
+        );
+        assert_eq!(critical.overall_status, RiskLevel::Critical);
+    }
+
+    #[tokio::test]
+    async fn test_scan_without_entry_size_limit_omits_utilization() {
+        let contract_bytes = [82u8; 32];
+        let report = scan_instance(
+            contract_bytes,
+            &make_instance_with_storage_xdr(contract_bytes, 60, 1_000),
+            None,
+        )
+        .await;
+        let metrics = report.entries[0].instance_storage.clone().unwrap();
+        assert_eq!(metrics.key_count, 60);
+        assert!(metrics.entry_size_bytes > 60_000);
+        assert_eq!(metrics.max_entry_size_bytes, None);
+        assert_eq!(metrics.utilization_pct, None);
+        assert_eq!(metrics.size_status, RiskLevel::Ok);
+        assert_eq!(report.overall_status, RiskLevel::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_scan_malformed_instance_storage_is_not_fatal() {
+        let contract_bytes = [83u8; 32];
+        // A contract-data entry at the instance key whose value is not an instance.
+        let not_an_instance = LedgerEntryData::ContractData(ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(Hash(contract_bytes)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::U32(1),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let report = scan_instance(contract_bytes, &not_an_instance, Some(65_536)).await;
+        assert_eq!(report.entries[0].instance_storage, None);
+        assert_eq!(report.entries[0].status, RiskLevel::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_scan_rejects_invalid_instance_size_thresholds_before_rpc() {
+        // No latest ledger configured: reaching the RPC would fail differently.
+        let usecase = ScanContractUseCase::new(MockLedgerReader::new());
+        let request = ScanRequest::new(stellar_strkey::Contract([84u8; 32]).to_string())
+            .with_instance_size_thresholds(InstanceSizeThresholds {
+                warn_pct: 90,
+                critical_pct: 75,
+            });
+        assert!(matches!(
+            usecase.execute(request).await,
+            Err(crate::error::SentinelError::InvalidThresholdConfig(_))
         ));
     }
 

@@ -19,7 +19,8 @@ pub use compare::{
 pub use entry::{Durability, EntryType, StorageEntry};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
 pub use risk::{
-    evaluate_risk, RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS, DEFAULT_WARNING_LEDGERS,
+    evaluate_risk, InstanceSizeThresholds, RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
+    DEFAULT_INSTANCE_SIZE_CRITICAL_PCT, DEFAULT_INSTANCE_SIZE_WARN_PCT, DEFAULT_WARNING_LEDGERS,
 };
 pub use scenario::{
     evaluate_protocol_scenario, NetworkRentParameters, ProtocolScenarioReport, ScenarioEntry,
