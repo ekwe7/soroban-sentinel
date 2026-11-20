@@ -612,3 +612,365 @@ async fn test_cli_scan_baseline_comparison() {
 
     let _ = std::fs::remove_file(temp_baseline);
 }
+
+mod common;
+
+// Temporary keys (--temp-key / --temp-key-xdr) combined with persistent keys in one scan
+#[tokio::test]
+async fn test_cli_scan_temporary_keys_end_to_end() {
+    use sentinel_core::adapters::{derive_persistent_symbol_key, derive_temporary_symbol_key};
+    use stellar_xdr::curr::ScSymbol;
+
+    let mock_server = MockServer::start().await;
+    let contract_id = [70u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let nonce = ScVal::Symbol(ScSymbol("NONCE".try_into().unwrap()));
+    let missing_xdr = ScVal::U32(404).to_xdr_base64(Limits::none()).unwrap();
+
+    common::mount_ledger(
+        &mock_server,
+        5_400_000,
+        vec![
+            (
+                derive_contract_instance_key(&contract_id).unwrap(),
+                common::instance_entry_xdr(contract_id, None),
+                5_600_000,
+            ),
+            (
+                derive_persistent_symbol_key(&contract_id, "NONCE").unwrap(),
+                common::data_entry_xdr(
+                    contract_id,
+                    nonce.clone(),
+                    ContractDataDurability::Persistent,
+                ),
+                5_600_000,
+            ),
+            (
+                derive_temporary_symbol_key(&contract_id, "NONCE").unwrap(),
+                common::data_entry_xdr(contract_id, nonce, ContractDataDurability::Temporary),
+                5_600_000,
+            ),
+        ],
+    )
+    .await;
+
+    let args = [
+        "scan",
+        &contract_strkey,
+        "--rpc-url",
+        &mock_server.uri(),
+        "--key",
+        "NONCE",
+        "--temp-key",
+        "NONCE",
+        "--temp-key-xdr",
+        &missing_xdr,
+    ];
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(args)
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("Persistent Key: NONCE"))
+        .stdout(predicate::str::contains("Temporary Key: NONCE"))
+        .stdout(predicate::str::contains(format!(
+            "UNRECOVERABLE: Temporary Key (XDR): {} is missing or expired",
+            missing_xdr
+        )));
+
+    let output = Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(args)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let entries = parsed["entries"].as_array().unwrap();
+    let find = |id: &str| entries.iter().find(|e| e["identifier"] == id).unwrap();
+    assert_eq!(find("persistent:NONCE")["durability"], "persistent");
+    let temp = find("temporary:NONCE");
+    assert_eq!(temp["durability"], "temporary");
+    assert_eq!(temp["status"], "ok");
+    let missing = find(&format!("temporary_xdr:{}", missing_xdr));
+    assert_eq!(missing["durability"], "temporary");
+    assert_eq!(missing["status"], "archived");
+    assert_eq!(missing["unrecoverable"], true);
+}
+
+// An unknown --format is rejected by clap with exit code 10 before any RPC request
+#[tokio::test]
+async fn test_cli_scan_unknown_format_rejected_before_rpc() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+    let contract_strkey = stellar_strkey::Contract([71u8; 32]).to_string();
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            &mock_server.uri(),
+            "--format",
+            "xml",
+        ])
+        .assert()
+        .code(10)
+        .stderr(predicate::str::contains("invalid value 'xml'"));
+
+    mock_server.verify().await;
+}
+
+/// Serves an instance entry whose remaining TTL yields the given status.
+async fn mount_instance_with_live_until(
+    server: &MockServer,
+    contract_id: [u8; 32],
+    live_until: u32,
+) {
+    common::mount_ledger(
+        server,
+        5_400_000,
+        vec![(
+            derive_contract_instance_key(&contract_id).unwrap(),
+            common::instance_entry_xdr(contract_id, None),
+            live_until,
+        )],
+    )
+    .await;
+}
+
+// Markdown and Prometheus formats use the same risk exit codes as text and JSON
+#[tokio::test]
+async fn test_cli_scan_markdown_and_prometheus_exit_codes() {
+    // 200,000 remaining -> OK (0); 100,000 -> WARN (1); 10,000 -> CRITICAL (2)
+    for (seed, live_until, expected_code, status, status_value) in [
+        (72u8, 5_600_000, 0, "OK", "0"),
+        (73u8, 5_500_000, 1, "WARN", "1"),
+        (74u8, 5_410_000, 2, "CRITICAL", "2"),
+    ] {
+        let mock_server = MockServer::start().await;
+        let contract_id = [seed; 32];
+        let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+        mount_instance_with_live_until(&mock_server, contract_id, live_until).await;
+
+        let markdown = Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--format",
+                "markdown",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(markdown.status.code(), Some(expected_code));
+        let stdout = String::from_utf8(markdown.stdout).unwrap();
+        assert!(stdout.contains(&format!("**Contract:** {}", contract_strkey)));
+        assert!(stdout.contains("| Entry | Durability | Size | Live Until | Remaining | Status |"));
+        assert!(stdout.contains("| Contract Instance | Instance |"));
+        assert!(stdout.contains(&format!(" | {} |", status)));
+        assert!(stdout.contains("**Summary:** 1 entries checked."));
+        assert!(!stdout.contains('\x1b'));
+
+        let prometheus = Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--format",
+                "prometheus",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(prometheus.status.code(), Some(expected_code));
+        let stdout = String::from_utf8(prometheus.stdout).unwrap();
+        assert!(stdout.ends_with('\n'));
+        assert!(stdout.contains("# TYPE soroban_sentinel_latest_ledger gauge"));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_latest_ledger{{contract=\"{}\",network=\"testnet\"}} 5400000",
+            contract_strkey
+        )));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_entry_live_until_ledger{{contract=\"{}\",network=\"testnet\",entry=\"instance\",durability=\"instance\"}} {}",
+            contract_strkey, live_until
+        )));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_entry_status{{contract=\"{}\",network=\"testnet\",entry=\"instance\",durability=\"instance\"}} {}",
+            contract_strkey, status_value
+        )));
+    }
+}
+
+/// Runs `sentinel scan` against `server` in the given output format.
+fn scan_instance_storage_cmd(
+    server: &MockServer,
+    contract_strkey: &str,
+    format: &str,
+) -> std::process::Output {
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            contract_strkey,
+            "--rpc-url",
+            &server.uri(),
+            "--format",
+            format,
+        ])
+        .output()
+        .unwrap()
+}
+
+/// Instance entry XDR holding `keys` storage values of 1,000 bytes, and its serialized size.
+fn instance_storage_xdr(contract_id: [u8; 32], keys: u32) -> (String, usize) {
+    let xdr = common::instance_entry_xdr(contract_id, Some(common::storage_map(keys, 1_000)));
+    let size = sentinel_core::adapters::extract_instance_storage_stats(&xdr)
+        .unwrap()
+        .entry_size_bytes;
+    (xdr, size)
+}
+
+/// Serves the instance entry with a healthy TTL, plus the network entry-size limit if given.
+async fn mount_instance_storage(
+    server: &MockServer,
+    contract_id: [u8; 32],
+    instance_xdr: String,
+    limit: Option<u32>,
+) {
+    let mut entries = vec![(
+        derive_contract_instance_key(&contract_id).unwrap(),
+        instance_xdr,
+        5_900_000,
+    )];
+    entries.extend(limit.map(common::entry_size_limit_entry));
+    common::mount_ledger(server, 5_400_000, entries).await;
+}
+
+// Instance storage well under the network limit -> OK, metrics in text and JSON
+#[tokio::test]
+async fn test_cli_scan_instance_storage_ok() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [90u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, _) = instance_storage_xdr(contract_id, 2);
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, Some(65_536)).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(0));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(stdout.contains("Instance storage: 2 keys,"));
+    assert!(stdout.contains("of the 65,536 B network entry-size limit"));
+    assert!(!stdout.contains("instance storage SIZE"));
+    assert!(text.stderr.is_empty());
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(0));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let metrics = &parsed["entries"][0]["instance_storage"];
+    assert_eq!(metrics["key_count"], 2);
+    assert_eq!(metrics["max_entry_size_bytes"], 65_536);
+    assert_eq!(metrics["size_status"], "ok");
+}
+
+// Instance storage at ~80% of the limit -> WARN from size (exit 1) although TTL is healthy
+#[tokio::test]
+async fn test_cli_scan_instance_storage_warn() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [91u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, size) = instance_storage_xdr(contract_id, 60);
+    let limit = (size * 5 / 4) as u32;
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, Some(limit)).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(1));
+    let stdout = String::from_utf8(text.stdout).unwrap();
+    assert!(stdout.contains("Instance storage: 60 keys,"));
+    assert!(stdout.contains("(80.0%)"));
+    assert!(stdout.contains("WARN (instance storage SIZE)"));
+    assert!(stdout.contains("This status is caused by entry size, not TTL."));
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(1));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let instance = &parsed["entries"][0];
+    assert_eq!(instance["status"], "warn");
+    assert_eq!(instance["instance_storage"]["size_status"], "warn");
+    assert_eq!(instance["instance_storage"]["utilization_pct"], 80.0);
+}
+
+// Network limit unavailable -> scan succeeds, size and count reported, utilisation omitted
+#[tokio::test]
+async fn test_cli_scan_instance_storage_limit_unavailable() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [92u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let (instance_xdr, _) = instance_storage_xdr(contract_id, 60);
+    mount_instance_storage(&mock_server, contract_id, instance_xdr, None).await;
+
+    let text = scan_instance_storage_cmd(&mock_server, &contract_strkey, "text");
+    assert_eq!(text.status.code(), Some(0));
+    assert!(String::from_utf8(text.stdout)
+        .unwrap()
+        .contains("Instance storage: 60 keys,"));
+    assert!(String::from_utf8(text.stderr)
+        .unwrap()
+        .contains("max_contract_data_entry_bytes limit could not be fetched"));
+
+    let json = scan_instance_storage_cmd(&mock_server, &contract_strkey, "json");
+    assert_eq!(json.status.code(), Some(0));
+    let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let metrics = &parsed["entries"][0]["instance_storage"];
+    assert_eq!(metrics["key_count"], 60);
+    assert!(metrics["entry_size_bytes"].as_u64().unwrap() > 60_000);
+    assert!(metrics.get("utilization_pct").is_none());
+    assert!(String::from_utf8(json.stderr)
+        .unwrap()
+        .contains("utilisation is omitted"));
+}
+
+// Invalid instance-size percentages are rejected with exit 10 before any RPC request
+#[tokio::test]
+async fn test_cli_scan_invalid_instance_size_pcts_rejected_before_rpc() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+    let contract_strkey = stellar_strkey::Contract([93u8; 32]).to_string();
+
+    for (warn, critical) in [
+        ("90", "75"),
+        ("0", "50"),
+        ("75", "101"),
+        ("80", "80"),
+        ("75", "300"),
+    ] {
+        Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--instance-size-warn-pct",
+                warn,
+                "--instance-size-critical-pct",
+                critical,
+            ])
+            .assert()
+            .code(10);
+    }
+    mock_server.verify().await;
+}

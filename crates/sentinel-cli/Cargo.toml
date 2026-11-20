@@ -29,6 +29,8 @@ stellar-strkey.workspace = true
 toml = "0.8"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+async-trait.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 wiremock.workspace = true

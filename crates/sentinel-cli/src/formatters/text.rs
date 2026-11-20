@@ -39,7 +39,7 @@ pub fn format_with_commas<T: std::fmt::Display>(val: T) -> String {
 }
 
 /// Resolves a human-friendly display label for an entry identifier.
-fn format_entry_description(key_identifier: &str) -> String {
+pub(crate) fn format_entry_description(key_identifier: &str) -> String {
     match key_identifier {
         "instance" => "Contract Instance".to_string(),
         "code_wasm" => "Contract Code (WASM)".to_string(),
@@ -50,6 +50,15 @@ fn format_entry_description(key_identifier: &str) -> String {
             format!(
                 "Persistent Key (XDR): {}",
                 id.trim_start_matches("persistent_xdr:")
+            )
+        }
+        id if id.starts_with("temporary:") => {
+            format!("Temporary Key: {}", id.trim_start_matches("temporary:"))
+        }
+        id if id.starts_with("temporary_xdr:") => {
+            format!(
+                "Temporary Key (XDR): {}",
+                id.trim_start_matches("temporary_xdr:")
             )
         }
         other => other.to_string(),
@@ -122,6 +131,12 @@ pub fn render_text(report: &TTLReport) -> String {
         "Summary: {} entries checked. {} OK, {} WARN, {} CRITICAL/ARCHIVED.",
         summary.total_entries, summary.ok, summary.warn, crit_or_archived
     );
+    let notes: String = report
+        .entries
+        .iter()
+        .flat_map(entry_notes)
+        .map(|note| format!("\n{}", note))
+        .collect();
 
     let header_line = format!(
         "Contract: {} | Network: {} | Latest Ledger: {} (Velocity: {:.1}s/ledger)",
@@ -131,7 +146,45 @@ pub fn render_text(report: &TTLReport) -> String {
         report.ledger_velocity_seconds
     );
 
-    format!("{}\n{}\n{}", header_line, table, summary_line)
+    format!("{}\n{}\n{}{}", header_line, table, summary_line, notes)
+}
+
+/// Explains what the table alone cannot convey: an unrecoverable temporary entry, and the
+/// instance-storage size metrics (including when size, not TTL, raised the status).
+pub(crate) fn entry_notes(entry: &StorageEntryReport) -> Vec<String> {
+    let mut notes = Vec::new();
+    if entry.is_unrecoverable() {
+        notes.push(format!(
+            "UNRECOVERABLE: {} is missing or expired. Temporary entries are deleted permanently and cannot be restored.",
+            format_entry_description(&entry.key_identifier)
+        ));
+    }
+    if let Some(metrics) = &entry.instance_storage {
+        let size = match (metrics.max_entry_size_bytes, metrics.utilization_pct) {
+            (Some(limit), Some(pct)) => format!(
+                "{} B of the {} B network entry-size limit ({:.1}%)",
+                format_with_commas(metrics.entry_size_bytes),
+                format_with_commas(limit),
+                pct
+            ),
+            _ => format!(
+                "{} B (network entry-size limit unavailable; utilisation omitted)",
+                format_with_commas(metrics.entry_size_bytes)
+            ),
+        };
+        notes.push(format!(
+            "Instance storage: {} keys, {}.",
+            format_with_commas(metrics.key_count),
+            size
+        ));
+        if metrics.size_status != RiskLevel::Ok {
+            notes.push(format!(
+                "{} (instance storage SIZE): the instance entry is approaching the network's maximum contract-data entry size, so storage writes may start failing. This status is caused by entry size, not TTL.",
+                metrics.size_status
+            ));
+        }
+    }
+    notes
 }
 
 /// Formats a change category into a styled table cell.
@@ -370,5 +423,127 @@ mod tests {
         assert!(output.contains("ARCHIVED"));
         assert!(output.contains("CRITICAL"));
         assert!(output.contains("Summary: 2 entries checked. 0 OK, 0 WARN, 2 CRITICAL/ARCHIVED."));
+    }
+
+    #[test]
+    fn test_render_text_labels_temporary_entries_and_flags_unrecoverable() {
+        let report = TTLReport {
+            contract_id: "CTEMP".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![
+                StorageEntryReport::new(
+                    "temporary:NONCE",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    48,
+                    5_450_000,
+                    50_000,
+                    250_000.0,
+                    2.89,
+                    RiskLevel::Warn,
+                ),
+                StorageEntryReport::new(
+                    "temporary_xdr:AAAAAw==",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+                StorageEntryReport::new(
+                    "persistent:Gone",
+                    EntryType::PersistentData,
+                    Durability::Persistent,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+            ],
+            overall_status: RiskLevel::Archived,
+            archival_recommendations: Vec::new(),
+        };
+
+        let output = render_text(&report);
+        assert!(output.contains("Temporary Key: NONCE"));
+        assert!(output.contains("Temporary Key (XDR): AAAAAw=="));
+        assert!(output.contains("Temporary"));
+        assert!(output.contains(
+            "UNRECOVERABLE: Temporary Key (XDR): AAAAAw== is missing or expired. Temporary entries are deleted permanently and cannot be restored."
+        ));
+        // A live temporary entry and an archived persistent entry are not unrecoverable.
+        assert!(!output.contains("UNRECOVERABLE: Temporary Key: NONCE"));
+        assert!(!output.contains("UNRECOVERABLE: Persistent Key: Gone"));
+    }
+
+    fn instance_with_metrics(
+        status: RiskLevel,
+        metrics: sentinel_core::usecases::InstanceStorageReport,
+    ) -> TTLReport {
+        let mut entry = StorageEntryReport::new(
+            "instance",
+            EntryType::ContractInstance,
+            Durability::Instance,
+            52_000,
+            5_900_000,
+            500_000,
+            2_500_000.0,
+            28.9,
+            status,
+        );
+        entry.instance_storage = Some(metrics);
+        TTLReport {
+            contract_id: "CSIZE".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![entry],
+            overall_status: status,
+            archival_recommendations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_render_text_instance_storage_size_warning_names_size_as_cause() {
+        let output = render_text(&instance_with_metrics(
+            RiskLevel::Warn,
+            sentinel_core::usecases::InstanceStorageReport {
+                key_count: 60,
+                entry_size_bytes: 52_429,
+                max_entry_size_bytes: Some(65_536),
+                utilization_pct: Some(80.0),
+                size_status: RiskLevel::Warn,
+            },
+        ));
+        assert!(output.contains(
+            "Instance storage: 60 keys, 52,429 B of the 65,536 B network entry-size limit (80.0%)."
+        ));
+        assert!(output.contains("WARN (instance storage SIZE)"));
+        assert!(output.contains("This status is caused by entry size, not TTL."));
+    }
+
+    #[test]
+    fn test_render_text_instance_storage_without_limit() {
+        let output = render_text(&instance_with_metrics(
+            RiskLevel::Ok,
+            sentinel_core::usecases::InstanceStorageReport {
+                key_count: 3,
+                entry_size_bytes: 400,
+                max_entry_size_bytes: None,
+                utilization_pct: None,
+                size_status: RiskLevel::Ok,
+            },
+        ));
+        assert!(output.contains(
+            "Instance storage: 3 keys, 400 B (network entry-size limit unavailable; utilisation omitted)."
+        ));
+        assert!(!output.contains("instance storage SIZE"));
     }
 }

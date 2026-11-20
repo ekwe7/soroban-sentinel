@@ -4,9 +4,11 @@ pub mod bundle;
 pub mod check;
 pub mod cost_matrix;
 pub mod scan;
+pub mod watch;
 
 pub use bundle::run_bundle;
 pub use check::run_check;
+pub use watch::run_watch;
 pub use cost_matrix::run_cost_matrix;
 
 pub use scan::{
