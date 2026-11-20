@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Autonomous storage TTL monitoring and expiry-risk detection for Soroban smart contracts.
 #[derive(Parser, Debug)]
@@ -26,6 +26,21 @@ pub enum Commands {
     Check(CheckArgs),
 }
 
+/// Output format for `sentinel scan` results.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Colorized ASCII table
+    Text,
+    /// Machine-readable JSON
+    Json,
+    /// SARIF v2.1.0 for GitHub Code Scanning
+    Sarif,
+    /// GitHub-flavoured Markdown for PR and issue comments
+    Markdown,
+    /// Prometheus text exposition format for the node_exporter textfile collector
+    Prometheus,
+}
+
 /// Command-line arguments for the `sentinel scan` command.
 #[derive(Args, Debug, Clone)]
 pub struct ScanArgs {
@@ -41,9 +56,15 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), or "sarif" (GitHub Code Scanning)
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
-    pub format: String,
+    /// Output format for scan results. Unknown values are rejected before any RPC call.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = OutputFormat::Text,
+        ignore_case = true,
+        value_name = "FORMAT"
+    )]
+    pub format: OutputFormat,
 
     /// Persistent storage key symbol to inspect (can be specified multiple times)
     #[arg(long = "key", value_name = "SYMBOL")]
@@ -154,6 +175,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_scan_format_values() {
+        for (raw, expected) in [
+            ("text", OutputFormat::Text),
+            ("json", OutputFormat::Json),
+            ("sarif", OutputFormat::Sarif),
+            ("markdown", OutputFormat::Markdown),
+            ("prometheus", OutputFormat::Prometheus),
+            ("JSON", OutputFormat::Json),
+        ] {
+            let args = Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", raw]).unwrap();
+            let Commands::Scan(scan) = args.command else {
+                panic!("expected scan command");
+            };
+            assert_eq!(scan.format, expected, "{raw}");
+        }
+        assert!(Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", "xml"]).is_err());
+    }
+
+    #[test]
     fn test_parse_scan_defaults() {
         let args = Cli::parse_from([
             "sentinel",
@@ -167,7 +207,7 @@ mod tests {
                     "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 );
                 assert_eq!(scan.network, "testnet");
-                assert_eq!(scan.format, "text");
+                assert_eq!(scan.format, OutputFormat::Text);
                 assert_eq!(scan.threshold, 120960);
                 assert!(scan.rpc_url.is_none());
                 assert!(scan.key.is_empty());
@@ -237,7 +277,7 @@ mod tests {
                     Some("https://soroban-testnet.stellar.org")
                 );
                 assert_eq!(scan.network, "mainnet");
-                assert_eq!(scan.format, "json");
+                assert_eq!(scan.format, OutputFormat::Json);
                 assert_eq!(scan.threshold, 50000);
                 assert_eq!(scan.key, vec!["COUNTER", "ADMIN"]);
                 assert_eq!(scan.key_xdr, vec!["AAAAFA=="]);

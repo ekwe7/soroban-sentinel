@@ -698,3 +698,115 @@ async fn test_cli_scan_temporary_keys_end_to_end() {
     assert_eq!(missing["status"], "archived");
     assert_eq!(missing["unrecoverable"], true);
 }
+
+// An unknown --format is rejected by clap with exit code 10 before any RPC request
+#[tokio::test]
+async fn test_cli_scan_unknown_format_rejected_before_rpc() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+    let contract_strkey = stellar_strkey::Contract([71u8; 32]).to_string();
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            &mock_server.uri(),
+            "--format",
+            "xml",
+        ])
+        .assert()
+        .code(10)
+        .stderr(predicate::str::contains("invalid value 'xml'"));
+
+    mock_server.verify().await;
+}
+
+/// Serves an instance entry whose remaining TTL yields the given status.
+async fn mount_instance_with_live_until(
+    server: &MockServer,
+    contract_id: [u8; 32],
+    live_until: u32,
+) {
+    common::mount_ledger(
+        server,
+        5_400_000,
+        vec![(
+            derive_contract_instance_key(&contract_id).unwrap(),
+            common::instance_entry_xdr(contract_id, None),
+            live_until,
+        )],
+    )
+    .await;
+}
+
+// Markdown and Prometheus formats use the same risk exit codes as text and JSON
+#[tokio::test]
+async fn test_cli_scan_markdown_and_prometheus_exit_codes() {
+    // 200,000 remaining -> OK (0); 100,000 -> WARN (1); 10,000 -> CRITICAL (2)
+    for (seed, live_until, expected_code, status, status_value) in [
+        (72u8, 5_600_000, 0, "OK", "0"),
+        (73u8, 5_500_000, 1, "WARN", "1"),
+        (74u8, 5_410_000, 2, "CRITICAL", "2"),
+    ] {
+        let mock_server = MockServer::start().await;
+        let contract_id = [seed; 32];
+        let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+        mount_instance_with_live_until(&mock_server, contract_id, live_until).await;
+
+        let markdown = Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--format",
+                "markdown",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(markdown.status.code(), Some(expected_code));
+        let stdout = String::from_utf8(markdown.stdout).unwrap();
+        assert!(stdout.contains(&format!("**Contract:** {}", contract_strkey)));
+        assert!(stdout.contains("| Entry | Durability | Size | Live Until | Remaining | Status |"));
+        assert!(stdout.contains("| Contract Instance | Instance |"));
+        assert!(stdout.contains(&format!(" | {} |", status)));
+        assert!(stdout.contains("**Summary:** 1 entries checked."));
+        assert!(!stdout.contains('\x1b'));
+
+        let prometheus = Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "scan",
+                &contract_strkey,
+                "--rpc-url",
+                &mock_server.uri(),
+                "--format",
+                "prometheus",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(prometheus.status.code(), Some(expected_code));
+        let stdout = String::from_utf8(prometheus.stdout).unwrap();
+        assert!(stdout.ends_with('\n'));
+        assert!(stdout.contains("# TYPE soroban_sentinel_latest_ledger gauge"));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_latest_ledger{{contract=\"{}\",network=\"testnet\"}} 5400000",
+            contract_strkey
+        )));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_entry_live_until_ledger{{contract=\"{}\",network=\"testnet\",entry=\"instance\",durability=\"instance\"}} {}",
+            contract_strkey, live_until
+        )));
+        assert!(stdout.contains(&format!(
+            "soroban_sentinel_entry_status{{contract=\"{}\",network=\"testnet\",entry=\"instance\",durability=\"instance\"}} {}",
+            contract_strkey, status_value
+        )));
+    }
+}

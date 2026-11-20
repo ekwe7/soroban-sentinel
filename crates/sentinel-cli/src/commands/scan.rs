@@ -10,8 +10,10 @@ use sentinel_core::domain::{RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{ScanContractUseCase, ScanRequest};
 
-use crate::args::ScanArgs;
-use crate::formatters::{render_json_with_diff, render_sarif, render_text_with_diff};
+use crate::args::{OutputFormat, ScanArgs};
+use crate::formatters::{
+    render_json_with_diff, render_markdown, render_prometheus, render_sarif, render_text_with_diff,
+};
 
 /// Exit code: All evaluated storage entries have status OK.
 pub const EXIT_OK: i32 = 0;
@@ -225,17 +227,12 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         .as_ref()
         .map(|b| compare_reports(&report, b));
 
-    let output_result = match args.format.to_lowercase().as_str() {
-        "text" => Ok(render_text_with_diff(&report, baseline_diff.as_ref())),
-        "json" => render_json_with_diff(&report, baseline_diff.clone()),
-        "sarif" => render_sarif(&report),
-        other => {
-            eprintln!(
-                "Error: Unsupported format '{}'. Supported formats: text, json, sarif",
-                other
-            );
-            return EXIT_INVALID_ARGS;
-        }
+    let output_result = match args.format {
+        OutputFormat::Text => Ok(render_text_with_diff(&report, baseline_diff.as_ref())),
+        OutputFormat::Json => render_json_with_diff(&report, baseline_diff.clone()),
+        OutputFormat::Sarif => render_sarif(&report),
+        OutputFormat::Markdown => Ok(render_markdown(&report)),
+        OutputFormat::Prometheus => Ok(render_prometheus(&report)),
     };
 
     match output_result {

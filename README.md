@@ -303,6 +303,45 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 }
 ```
 
+### Markdown and Prometheus Output
+`--format` accepts `text` (default), `json`, `sarif`, `markdown`, and `prometheus`. An unknown value is
+rejected with exit code `10` before any RPC request is made.
+
+**Markdown** (`--format markdown`) prints a header (contract, network, latest ledger), a GitHub-flavoured
+table with the columns `Entry | Durability | Size | Live Until | Remaining | Status`, and a summary line,
+with no ANSI colour codes. Pipes, backticks and other Markdown punctuation in key names are escaped, so the
+output can be posted as a PR or issue comment by a CI bot:
+
+```bash
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format markdown > scan.md
+```
+
+**Prometheus** (`--format prometheus`) writes the [text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+for the node_exporter *textfile collector*, so no daemon or HTTP server is needed. Every family has `# HELP`
+and `# TYPE` lines, entries keep a stable order, and no timestamps are written. All gauges carry `contract`
+and `network` labels; per-entry gauges also carry `entry` and `durability`:
+
+| Metric | Meaning |
+| :--- | :--- |
+| `soroban_sentinel_latest_ledger` | Latest ledger sequence observed by the scan |
+| `soroban_sentinel_entry_live_until_ledger` | Ledger until which the entry stays live (`0` if missing or archived) |
+| `soroban_sentinel_entry_remaining_ledgers` | Ledgers remaining before the entry expires |
+| `soroban_sentinel_entry_status` | `0` = OK, `1` = WARN, `2` = CRITICAL, `3` = ARCHIVED |
+| `soroban_sentinel_entry_size_bytes` | Serialized entry size in bytes |
+
+The exit code still reflects risk (`0`, `1` or `2`) in both formats, so a cron job must not treat a non-zero
+exit as "no output". Write to a temporary file and `mv` it into the collector directory, so node_exporter
+never reads a half-written file:
+
+```bash
+# crontab: refresh the metrics every 10 minutes
+*/10 * * * * D=/var/lib/node_exporter/textfile; sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format prometheus > "$D/sentinel.prom.tmp"; [ -s "$D/sentinel.prom.tmp" ] && mv "$D/sentinel.prom.tmp" "$D/sentinel.prom"
+```
+
+Use `;` after the scan, not `&&`: with `&&`, a WARN or CRITICAL scan (exit `1` or `2`) would leave the
+metrics stale exactly when they matter. The `[ -s ... ]` check keeps the previous metrics when the scan
+fails outright (exit `10` or `11`) and prints nothing.
+
 ### Standard Process Exit Codes
 `sentinel` sets standard UNIX exit codes suitable for CI/CD gates and automation:
 
