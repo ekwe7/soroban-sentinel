@@ -49,7 +49,12 @@ impl ManifestConfig {
         // Validate network name
         match self.network.as_str() {
             "testnet" | "mainnet" | "futurenet" | "local" => {}
-            other => return Err(format!("Invalid network '{}'. Use: testnet, mainnet, futurenet, or local", other)),
+            other => {
+                return Err(format!(
+                    "Invalid network '{}'. Use: testnet, mainnet, futurenet, or local",
+                    other
+                ))
+            }
         }
 
         // Validate contract IDs and ensure warning_threshold > critical_threshold
@@ -57,7 +62,9 @@ impl ManifestConfig {
             // Validate contract Strkey format (must start with C for contracts or G for accounts)
             let contract_id = &contract.contract_id;
             if contract_id.is_empty()
-                || (!contract_id.starts_with('C') && !contract_id.starts_with('G') && !contract_id.starts_with('S'))
+                || (!contract_id.starts_with('C')
+                    && !contract_id.starts_with('G')
+                    && !contract_id.starts_with('S'))
             {
                 return Err(format!(
                     "Invalid contract ID '{}'. Strkey must start with 'C' (contract), 'G' (account), or 'S' (seed)",

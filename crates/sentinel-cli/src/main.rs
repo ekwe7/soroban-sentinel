@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use sentinel_cli::args::{Cli, Commands};
-use sentinel_cli::commands::{lint_manifest, schema_command, run_scan, EXIT_INVALID_ARGS};
+use sentinel_cli::commands::{lint_manifest, run_scan, schema_command, EXIT_INVALID_ARGS};
 
 #[tokio::main]
 async fn main() {
@@ -19,15 +19,13 @@ async fn main() {
     };
 
     let exit_code = match cli.command {
-        Commands::Scan(args) => run_scan(args).await,
+        Commands::Scan(args) => run_scan(*args).await,
         Commands::LintManifest(args) => {
             let (code, summary) = lint_manifest(&args.manifest);
             println!("{}", summary);
             code
         }
-        Commands::Schema(args) => {
-            schema_command(&args.manifest)
-        }
+        Commands::Schema(args) => schema_command(&args.manifest),
     };
 
     std::process::exit(exit_code);

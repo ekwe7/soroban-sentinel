@@ -17,7 +17,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
-    Scan(ScanArgs),
+    Scan(Box<ScanArgs>),
 
     /// Lint a manifest file and export JSON Schema for IDE autocompletion
     LintManifest(LintManifestArgs),

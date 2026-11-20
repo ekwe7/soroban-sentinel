@@ -1,8 +1,8 @@
 //! JSON Schema generator and manifest linter for sentinel.
 
-use serde_json::to_string_pretty;
-use schemars::schema_for;
 use crate::config::ManifestConfig;
+use schemars::schema_for;
+use serde_json::to_string_pretty;
 
 /// Generates a JSON Schema object from the manifest configuration.
 pub fn generate_schema() -> Result<String, String> {
@@ -34,19 +34,32 @@ pub fn lint_manifest(manifest_path: &str) -> (i32, String) {
 
     // If we got here, validation passed
     let mut summary = String::new();
-    summary.push_str(&format!("Manifest '{}' validated successfully:\n", path.display()));
+    summary.push_str(&format!(
+        "Manifest '{}' validated successfully:\n",
+        path.display()
+    ));
     summary.push_str(&format!("  Network: {}\n", config.network));
     summary.push_str(&format!("  Contracts: {}\n", config.contracts.len()));
-    summary.push_str(&format!("  Warning threshold: {}\n", config.warning_threshold));
-    summary.push_str(&format!("  Critical threshold: {}\n", config.critical_threshold));
+    summary.push_str(&format!(
+        "  Warning threshold: {}\n",
+        config.warning_threshold
+    ));
+    summary.push_str(&format!(
+        "  Critical threshold: {}\n",
+        config.critical_threshold
+    ));
 
     // Print contract-specific details
     for contract in &config.contracts {
         summary.push_str(&format!(
             "  Contract '{}': warning={}, critical={}\n",
             contract.contract_id,
-            contract.warning_threshold.unwrap_or(config.warning_threshold),
-            contract.critical_threshold.unwrap_or(config.critical_threshold),
+            contract
+                .warning_threshold
+                .unwrap_or(config.warning_threshold),
+            contract
+                .critical_threshold
+                .unwrap_or(config.critical_threshold),
         ));
     }
 

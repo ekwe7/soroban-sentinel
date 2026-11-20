@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-readme = "../../README.md"
+repository.workspace = true
+readme.workspace = true
 description = "Command-line interface for Soroban Sentinel"
 
 [lib]
@@ -23,7 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 comfy-table.workspace = true
 thiserror.workspace = true
-schemars = "0.8"
+schemars.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

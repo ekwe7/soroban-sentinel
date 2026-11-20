@@ -88,7 +88,9 @@ fn test_lint_manifest_valid() {
     cmd.assert()
         .code(0)
         .stderr(predicate::str::is_empty())
-        .stdout(predicate::str::contains("Manifest '/tmp/valid_manifest_test.json' validated successfully"));
+        .stdout(predicate::str::contains(
+            "Manifest '/tmp/valid_manifest_test.json' validated successfully",
+        ));
 }
 
 #[test]
@@ -128,7 +130,9 @@ fn test_lint_manifest_with_duplicate_contracts() {
     cmd.assert()
         .code(0)
         .stderr(predicate::str::is_empty())
-        .stdout(predicate::str::contains("Manifest '/tmp/duplicate_contracts_test.json' validated successfully"));
+        .stdout(predicate::str::contains(
+            "Manifest '/tmp/duplicate_contracts_test.json' validated successfully",
+        ));
 }
 
 #[test]
@@ -161,5 +165,8 @@ fn test_schema_command_has_required_fields() {
     // Schema should have title, type, properties
     assert!(parsed["title"].is_string(), "Schema must have a title");
     assert!(parsed["type"].is_string(), "Schema must have a type");
-    assert!(parsed["properties"].is_object(), "Schema must have properties");
+    assert!(
+        parsed["properties"].is_object(),
+        "Schema must have properties"
+    );
 }
