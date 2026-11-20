@@ -29,6 +29,15 @@ pub enum SentinelError {
 
     #[error("Invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
+
+    #[error("Missing network config setting: {0}")]
+    MissingNetworkConfig(String),
+
+    #[error("Malformed network config setting: {0}")]
+    MalformedNetworkConfig(String),
+
+    #[error("Unexpected network config setting variant: {0}")]
+    UnexpectedNetworkConfigVariant(String),
 }
 
 /// Convenience type alias for `Result<T, SentinelError>`.

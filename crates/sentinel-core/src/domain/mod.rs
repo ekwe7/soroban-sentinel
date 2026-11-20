@@ -7,6 +7,8 @@ pub mod compare;
 pub mod debt;
 pub mod entry;
 pub mod footprint;
+pub mod network_limits;
+pub mod recommend;
 pub mod risk;
 pub mod scenario;
 pub mod ttl;
@@ -21,6 +23,11 @@ pub use compare::{
 pub use debt::{RentDebt, RentDebtCalculator};
 pub use entry::{Durability, EntryType, StorageEntry};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
+pub use network_limits::NetworkLimits;
+pub use recommend::{
+    build_recommendation_plan, calculate_extend_to, shell_quote, RecommendationAction,
+    RecommendationPlan, TTLRecommendation, CONSERVATIVE_DEFAULT_MAX_ENTRY_TTL,
+};
 pub use risk::{
     evaluate_risk, RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS, DEFAULT_WARNING_LEDGERS,
 };

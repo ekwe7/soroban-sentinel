@@ -3,9 +3,9 @@
 use std::str::FromStr;
 use stellar_strkey::Contract;
 use stellar_xdr::curr::{
-    ContractDataDurability, ContractExecutable, Hash, LedgerEntry, LedgerEntryData, LedgerKey,
-    LedgerKeyContractCode, LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScSymbol, ScVal,
-    WriteXdr,
+    ConfigSettingId, ContractDataDurability, ContractExecutable, Hash, LedgerEntry,
+    LedgerEntryData, LedgerKey, LedgerKeyConfigSetting, LedgerKeyContractCode,
+    LedgerKeyContractData, Limits, ReadXdr, ScAddress, ScSymbol, ScVal, WriteXdr,
 };
 
 use crate::error::{SentinelError, SentinelResult};
@@ -129,6 +129,39 @@ pub fn derive_persistent_xdr_key(
         ))
     })?;
     derive_persistent_key_from_scval(contract_id, key_scval)
+}
+
+/// Derives the base64-encoded `LedgerKey` XDR for a config setting entry using a setting ID.
+pub fn derive_config_setting_key(setting_id: ConfigSettingId) -> SentinelResult<String> {
+    let ledger_key = LedgerKey::ConfigSetting(LedgerKeyConfigSetting {
+        config_setting_id: setting_id,
+    });
+
+    ledger_key.to_xdr_base64(Limits::none()).map_err(|e| {
+        SentinelError::SerializationError(format!("Failed to encode config setting key: {}", e))
+    })
+}
+
+/// Derives the base64 XDR key for the network StateArchival config setting.
+pub fn derive_state_archival_config_key() -> SentinelResult<String> {
+    let ledger_key = LedgerKey::ConfigSetting(LedgerKeyConfigSetting {
+        config_setting_id: ConfigSettingId::StateArchival,
+    });
+    ledger_key.to_xdr_base64(Limits::none()).map_err(|error| {
+        SentinelError::SerializationError(format!("Failed to encode state archival key: {error}"))
+    })
+}
+
+/// Derives the base64 XDR key for the network ContractDataEntrySizeBytes config setting.
+pub fn derive_contract_data_entry_size_config_key() -> SentinelResult<String> {
+    let ledger_key = LedgerKey::ConfigSetting(LedgerKeyConfigSetting {
+        config_setting_id: ConfigSettingId::ContractDataEntrySizeBytes,
+    });
+    ledger_key.to_xdr_base64(Limits::none()).map_err(|error| {
+        SentinelError::SerializationError(format!(
+            "Failed to encode contract data entry size key: {error}"
+        ))
+    })
 }
 
 #[cfg(test)]

@@ -24,8 +24,14 @@ pub enum Commands {
     /// Bundle contract and persistent-key TTL extensions into simulated transactions
     Bundle(BundleArgs),
 
+    /// Build, sign, and optionally submit a TTL extension transaction
+    Bump(BumpArgs),
+
     /// Scan contracts once from a TOML manifest
     Check(CheckArgs),
+
+    /// Display network state-archival and contract entry limits
+    Network(NetworkArgs),
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -86,6 +92,14 @@ pub struct ScanArgs {
     /// Return exit code 2 if any entry regressed in risk status or was removed compared to baseline
     #[arg(long = "fail-on-regression")]
     pub fail_on_regression: bool,
+
+    /// Render actionable TTL extension recommendations.
+    #[arg(long)]
+    pub recommend: bool,
+
+    /// Target maintenance horizon in days used by recommendations.
+    #[arg(long, default_value_t = 30, value_name = "DAYS")]
+    pub target_days: u32,
 }
 
 /// Command-line arguments for the cost-matrix command.
@@ -179,6 +193,61 @@ pub struct CheckArgs {
     pub config: std::path::PathBuf,
 
     /// Report format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// Command-line arguments for the `sentinel bump` command.
+#[derive(Args, Debug, Clone)]
+pub struct BumpArgs {
+    /// Contract address whose selected entries will be extended.
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Persistent storage key symbol (repeatable).
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Base64 XDR storage key (repeatable).
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Ledger TTL extension target.
+    #[arg(long, value_name = "LEDGERS")]
+    pub extend_to: u32,
+
+    #[arg(long, default_value = "testnet")]
+    pub network: String,
+
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Source Stellar account G... address.
+    #[arg(long, value_name = "G...")]
+    pub source_account: String,
+
+    /// Maximum total fee; required for submission.
+    #[arg(long, value_name = "STROOPS")]
+    pub max_fee: Option<u64>,
+
+    /// Submit the signed transaction instead of dry-run only.
+    #[arg(long)]
+    pub submit: bool,
+
+    /// Network passphrase required when a custom RPC URL is used.
+    #[arg(long, value_name = "PASSPHRASE")]
+    pub network_passphrase: Option<String>,
+}
+
+/// Command-line arguments for `sentinel network`.
+#[derive(Args, Debug, Clone)]
+pub struct NetworkArgs {
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
 }
