@@ -18,6 +18,8 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
+    /// Compare the cost of extending contract storage TTL across duration tiers
+    CostMatrix(CostMatrixArgs),
 
     /// Continuously monitor one contract, printing state changes between scans
     Watch(WatchArgs),
@@ -184,6 +186,44 @@ pub struct WatchArgs {
         value_name = "FORMAT"
     )]
     pub format: WatchFormat,
+/// Command-line arguments for the cost-matrix command.
+#[derive(Args, Debug)]
+pub struct CostMatrixArgs {
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// TTL targets in days, separated by commas
+    #[arg(long, value_delimiter = ',', default_value = "30,90,180,365", value_parser = clap::value_parser!(u32).range(1..))]
+    pub tiers: Vec<u32>,
+
+    #[arg(long, default_value = "testnet")]
+    pub network: String,
+
+    #[arg(long, env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Persistent storage key symbol (repeatable)
+    #[arg(long)]
+    pub key: Vec<String>,
+
+    /// Assumed effective rent fee per KiB in stroops
+    #[arg(long, default_value_t = 1000)]
+    pub rent_rate_per_kib: u64,
+
+    /// Assumed persistent rent divisor
+    #[arg(long, default_value_t = 1215, value_parser = clap::value_parser!(u32).range(1..))]
+    pub persistent_rent_denominator: u32,
+
+    /// Assumed non-rent fee per batched transaction in stroops
+    #[arg(long, default_value_t = 100)]
+    pub transaction_fee: u64,
+
+    /// Assumed network base reserve in stroops
+    #[arg(long, default_value_t = 5_000_000)]
+    pub base_reserve: u64,
 }
 
 /// Command-line arguments for the `sentinel bundle` command.

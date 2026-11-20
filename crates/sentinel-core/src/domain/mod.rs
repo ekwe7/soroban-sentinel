@@ -1,8 +1,10 @@
 //! Core pure domain models and calculations.
 
+pub mod budget;
 pub mod bundle;
 pub mod cold_storage;
 pub mod compare;
+pub mod debt;
 pub mod entry;
 pub mod footprint;
 pub mod risk;
@@ -16,6 +18,7 @@ pub use compare::{
     compare_reports, BaselineDiff, BaselineDiffSummary, BaselineEntrySnapshot, BaselineSnapshot,
     ChangeCategory, EntryDiff, MAX_BASELINE_FILE_BYTES,
 };
+pub use debt::{RentDebt, RentDebtCalculator};
 pub use entry::{Durability, EntryType, StorageEntry};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
 pub use risk::{

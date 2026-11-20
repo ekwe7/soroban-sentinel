@@ -18,6 +18,7 @@ use crate::domain::cold_storage::{
 use crate::domain::{
     calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
     evaluate_risk, Durability, EntryType, InstanceSizeThresholds, RiskLevel, StorageEntry,
+    evaluate_risk, Durability, EntryType, RentDebt, RentDebtCalculator, RiskLevel, StorageEntry,
     ThresholdConfig, TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
@@ -242,6 +243,25 @@ pub struct TTLReport {
 }
 
 impl TTLReport {
+    /// Calculate per-entry restoration rent and modeled arrears using this scan's TTL observations.
+    /// Entries absent from RPC need a known historical TTL and size supplied to the calculator directly.
+    /// Results use the scan's measured or estimated entry sizes.
+    pub fn rent_debts<'a>(
+        &'a self,
+        calculator: &'a RentDebtCalculator,
+    ) -> impl Iterator<Item = (&'a StorageEntryReport, RentDebt)> + 'a {
+        self.entries.iter().filter_map(move |entry| {
+            let byte_size = u32::try_from(entry.byte_size).ok()?;
+            let debt = calculator.calculate(
+                entry.durability,
+                byte_size,
+                entry.live_until_ledger,
+                self.latest_ledger,
+            )?;
+            Some((entry, debt))
+        })
+    }
+
     /// Calculates aggregate summary counts across all evaluated entries.
     pub fn summary(&self) -> ReportSummary {
         let mut ok = 0;
