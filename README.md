@@ -205,6 +205,26 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --fail-on-regression
 ```
 
+### Watching a Contract (`sentinel watch`)
+`sentinel watch` scans one contract on an interval. It accepts the same contract, key and threshold flags
+as `scan`. The first scan prints a full report; later scans print only timestamped state transitions (a
+status change, an entry appearing or disappearing, or `live_until` increasing after a TTL bump), or a single
+heartbeat line when nothing changed:
+
+```bash
+sentinel watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --key ADMIN --temp-key NONCE \
+  --interval 300
+
+# One JSON object per line (NDJSON) for log shippers
+sentinel watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format json
+```
+
+`--interval` accepts 10 seconds to 24 hours (default 60). A failed scan is logged to stderr and the watch
+continues; after `--max-consecutive-failures` failures in a row (default 5) it exits `11`. Ctrl-C or SIGTERM
+stops the watch cleanly and exits with the last scan's risk code (`0`, `1` or `2`). `--max-iterations <N>`
+stops after N scans.
+
 ### Advanced RPC & Velocity Options
 ```bash
 # Configure RPC timeout (1–120s) and retry attempts (0–10) with exponential backoff & jitter

@@ -19,6 +19,9 @@ pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
 
+    /// Continuously monitor one contract, printing state changes between scans
+    Watch(WatchArgs),
+
     /// Bundle contract and persistent-key TTL extensions into simulated transactions
     Bundle(BundleArgs),
 
@@ -41,9 +44,9 @@ pub enum OutputFormat {
     Prometheus,
 }
 
-/// Command-line arguments for the `sentinel scan` command.
+/// Contract, network, key and threshold flags shared by `sentinel scan` and `sentinel watch`.
 #[derive(Args, Debug, Clone)]
-pub struct ScanArgs {
+pub struct ScanTargetArgs {
     /// Target Soroban smart contract address (C... Strkey format)
     #[arg(value_name = "CONTRACT_ID")]
     pub contract_id: String,
@@ -55,16 +58,6 @@ pub struct ScanArgs {
     /// Target Stellar network: "testnet", "mainnet", "futurenet", or "local"
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
-
-    /// Output format for scan results. Unknown values are rejected before any RPC call.
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = OutputFormat::Text,
-        ignore_case = true,
-        value_name = "FORMAT"
-    )]
-    pub format: OutputFormat,
 
     /// Persistent storage key symbol to inspect (can be specified multiple times)
     #[arg(long = "key", value_name = "SYMBOL")]
@@ -121,6 +114,23 @@ pub struct ScanArgs {
     /// Override ledger close velocity in seconds per ledger (1.0–60.0)
     #[arg(long = "ledger-seconds", value_name = "SECS")]
     pub ledger_seconds: Option<f64>,
+}
+
+/// Command-line arguments for the `sentinel scan` command.
+#[derive(Args, Debug, Clone)]
+pub struct ScanArgs {
+    #[command(flatten)]
+    pub target: ScanTargetArgs,
+
+    /// Output format for scan results. Unknown values are rejected before any RPC call.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = OutputFormat::Text,
+        ignore_case = true,
+        value_name = "FORMAT"
+    )]
+    pub format: OutputFormat,
 
     /// Path to a previous JSON scan report baseline file for comparison
     #[arg(long = "baseline", value_name = "PATH")]
@@ -129,6 +139,51 @@ pub struct ScanArgs {
     /// Return exit code 2 if any entry regressed in risk status or was removed compared to baseline
     #[arg(long = "fail-on-regression")]
     pub fail_on_regression: bool,
+}
+
+/// Output format for `sentinel watch`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchFormat {
+    /// Human-readable report, then one line per state transition or heartbeat
+    Text,
+    /// One JSON object per line (NDJSON) for log shippers
+    Json,
+}
+
+/// Command-line arguments for the `sentinel watch` command.
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "The first scan prints a full report; later scans print only state transitions (status changes, entries appearing or disappearing, TTL bumps) or a heartbeat line. Ctrl-C or SIGTERM stops the watch and exits with the last scan's risk code (0 OK, 1 warning, 2 critical or archived). Invalid input exits 10; reaching --max-consecutive-failures exits 11."
+)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    pub target: ScanTargetArgs,
+
+    /// Seconds between scans (10–86,400)
+    #[arg(long, default_value_t = 60, value_name = "SECS")]
+    pub interval: u64,
+
+    /// Stop after this many scans (mainly for tests and scripted runs)
+    #[arg(long = "max-iterations", value_name = "N")]
+    pub max_iterations: Option<u64>,
+
+    /// Exit with code 11 after this many consecutive failed scans (1–100)
+    #[arg(
+        long = "max-consecutive-failures",
+        default_value_t = 5,
+        value_name = "N"
+    )]
+    pub max_consecutive_failures: u32,
+
+    /// Output format: text, or NDJSON (one JSON object per line)
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = WatchFormat::Text,
+        ignore_case = true,
+        value_name = "FORMAT"
+    )]
+    pub format: WatchFormat,
 }
 
 /// Command-line arguments for the `sentinel bundle` command.
@@ -191,6 +246,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_watch_args() {
+        let args = Cli::parse_from([
+            "sentinel",
+            "watch",
+            "CABC",
+            "--key",
+            "COUNTER",
+            "--temp-key",
+            "NONCE",
+            "--interval",
+            "30",
+            "--max-iterations",
+            "3",
+            "--max-consecutive-failures",
+            "2",
+            "--format",
+            "json",
+        ]);
+        let Commands::Watch(watch) = args.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.target.contract_id, "CABC");
+        assert_eq!(watch.target.key, vec!["COUNTER"]);
+        assert_eq!(watch.target.temp_key, vec!["NONCE"]);
+        assert_eq!(watch.interval, 30);
+        assert_eq!(watch.max_iterations, Some(3));
+        assert_eq!(watch.max_consecutive_failures, 2);
+        assert_eq!(watch.format, WatchFormat::Json);
+
+        let defaults = Cli::parse_from(["sentinel", "watch", "CABC"]);
+        let Commands::Watch(watch) = defaults.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.interval, 60);
+        assert_eq!(watch.max_iterations, None);
+        assert_eq!(watch.max_consecutive_failures, 5);
+        assert_eq!(watch.format, WatchFormat::Text);
+        assert!(
+            Cli::try_parse_from(["sentinel", "watch", "CABC", "--format", "markdown"]).is_err()
+        );
+    }
+
+    #[test]
     fn test_parse_scan_format_values() {
         for (raw, expected) in [
             ("text", OutputFormat::Text),
@@ -219,23 +317,23 @@ mod tests {
         match args.command {
             Commands::Scan(scan) => {
                 assert_eq!(
-                    scan.contract_id,
+                    scan.target.contract_id,
                     "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 );
-                assert_eq!(scan.network, "testnet");
+                assert_eq!(scan.target.network, "testnet");
                 assert_eq!(scan.format, OutputFormat::Text);
-                assert_eq!(scan.threshold, 120960);
-                assert!(scan.rpc_url.is_none());
-                assert!(scan.key.is_empty());
-                assert!(scan.key_xdr.is_empty());
-                assert!(scan.key_expr.is_empty());
-                assert!(scan.temp_key.is_empty());
-                assert!(scan.temp_key_xdr.is_empty());
-                assert_eq!(scan.instance_size_warn_pct, 75);
-                assert_eq!(scan.instance_size_critical_pct, 90);
-                assert!(scan.rpc_timeout.is_none());
-                assert!(scan.rpc_max_retries.is_none());
-                assert!(scan.ledger_seconds.is_none());
+                assert_eq!(scan.target.threshold, 120960);
+                assert!(scan.target.rpc_url.is_none());
+                assert!(scan.target.key.is_empty());
+                assert!(scan.target.key_xdr.is_empty());
+                assert!(scan.target.key_expr.is_empty());
+                assert!(scan.target.temp_key.is_empty());
+                assert!(scan.target.temp_key_xdr.is_empty());
+                assert_eq!(scan.target.instance_size_warn_pct, 75);
+                assert_eq!(scan.target.instance_size_critical_pct, 90);
+                assert!(scan.target.rpc_timeout.is_none());
+                assert!(scan.target.rpc_max_retries.is_none());
+                assert!(scan.target.ledger_seconds.is_none());
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
             }
@@ -287,24 +385,27 @@ mod tests {
         match args.command {
             Commands::Scan(scan) => {
                 assert_eq!(
-                    scan.contract_id,
+                    scan.target.contract_id,
                     "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 );
                 assert_eq!(
-                    scan.rpc_url.as_deref(),
+                    scan.target.rpc_url.as_deref(),
                     Some("https://soroban-testnet.stellar.org")
                 );
-                assert_eq!(scan.network, "mainnet");
+                assert_eq!(scan.target.network, "mainnet");
                 assert_eq!(scan.format, OutputFormat::Json);
-                assert_eq!(scan.threshold, 50000);
-                assert_eq!(scan.key, vec!["COUNTER", "ADMIN"]);
-                assert_eq!(scan.key_xdr, vec!["AAAAFA=="]);
-                assert_eq!(scan.key_expr, vec!["sym:Balance", "vec[sym:Data, u32:1]"]);
-                assert_eq!(scan.temp_key, vec!["NONCE", "SESSION"]);
-                assert_eq!(scan.temp_key_xdr, vec!["AAAAAw=="]);
-                assert_eq!(scan.rpc_timeout, Some(30));
-                assert_eq!(scan.rpc_max_retries, Some(5));
-                assert_eq!(scan.ledger_seconds, Some(5.5));
+                assert_eq!(scan.target.threshold, 50000);
+                assert_eq!(scan.target.key, vec!["COUNTER", "ADMIN"]);
+                assert_eq!(scan.target.key_xdr, vec!["AAAAFA=="]);
+                assert_eq!(
+                    scan.target.key_expr,
+                    vec!["sym:Balance", "vec[sym:Data, u32:1]"]
+                );
+                assert_eq!(scan.target.temp_key, vec!["NONCE", "SESSION"]);
+                assert_eq!(scan.target.temp_key_xdr, vec!["AAAAAw=="]);
+                assert_eq!(scan.target.rpc_timeout, Some(30));
+                assert_eq!(scan.target.rpc_max_retries, Some(5));
+                assert_eq!(scan.target.ledger_seconds, Some(5.5));
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
             }

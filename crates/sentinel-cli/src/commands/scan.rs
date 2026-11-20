@@ -12,7 +12,7 @@ use sentinel_core::domain::{
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{ScanContractUseCase, ScanRequest, TTLReport};
 
-use crate::args::{OutputFormat, ScanArgs};
+use crate::args::{OutputFormat, ScanArgs, ScanTargetArgs};
 use crate::formatters::{
     render_json_with_diff, render_markdown, render_prometheus, render_sarif, render_text_with_diff,
 };
@@ -124,57 +124,126 @@ pub fn load_and_validate_baseline(
     Ok(snapshot)
 }
 
-/// Prints a stderr note when instance-storage utilisation could not be computed because the
-/// network entry-size limit was unavailable. Stdout stays machine-readable.
-pub(crate) fn warn_if_entry_size_limit_unavailable(report: &TTLReport) {
-    let limit_missing = report.entries.iter().any(|entry| {
-        entry
-            .instance_storage
-            .as_ref()
-            .is_some_and(|metrics| metrics.max_entry_size_bytes.is_none())
-    });
-    if limit_missing {
-        eprintln!(
-            "Note: the network max_contract_data_entry_bytes limit could not be fetched; instance storage utilisation is omitted."
-        );
+/// The stderr note for a report whose instance-storage utilisation could not be computed because
+/// the network entry-size limit was unavailable, if that applies.
+pub(crate) fn entry_size_limit_note(report: &TTLReport) -> Option<&'static str> {
+    report
+        .entries
+        .iter()
+        .any(|entry| {
+            entry
+                .instance_storage
+                .as_ref()
+                .is_some_and(|metrics| metrics.max_entry_size_bytes.is_none())
+        })
+        .then_some(
+            "Note: the network max_contract_data_entry_bytes limit could not be fetched; instance storage utilisation is omitted.",
+        )
+}
+
+/// Maps a scan error to its exit code: invalid input (`10`) or RPC failure (`11`).
+pub(crate) fn exit_code_for_error(err: &SentinelError) -> i32 {
+    if is_rpc_failure(err) {
+        EXIT_RPC_FAILURE
+    } else {
+        EXIT_INVALID_ARGS
     }
+}
+
+/// Whether a scan error is a (possibly transient) RPC failure rather than invalid input.
+pub(crate) fn is_rpc_failure(err: &SentinelError) -> bool {
+    matches!(
+        err,
+        SentinelError::RpcConnectionTimeout(_)
+            | SentinelError::RpcResponseError { .. }
+            | SentinelError::SerializationError(_)
+    )
+}
+
+/// Maps an overall risk status to its exit code (`0`, `1` or `2`).
+pub(crate) fn exit_code_for_status(status: RiskLevel) -> i32 {
+    match status {
+        RiskLevel::Ok => EXIT_OK,
+        RiskLevel::Warn => EXIT_WARN,
+        RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
+    }
+}
+
+/// Validates the shared target flags and builds the RPC client and scan request, before any RPC
+/// call. Errors are user-facing messages for exit code `10`.
+pub(crate) fn prepare_scan(
+    target: &ScanTargetArgs,
+) -> Result<(SorobanRpcClient, ScanRequest), String> {
+    if let Some(timeout) = target.rpc_timeout {
+        if !(1..=120).contains(&timeout) {
+            return Err(format!(
+                "--rpc-timeout must be between 1 and 120 seconds (got {})",
+                timeout
+            ));
+        }
+    }
+
+    if let Some(retries) = target.rpc_max_retries {
+        if retries > 10 {
+            return Err(format!(
+                "--rpc-max-retries must be between 0 and 10 (got {})",
+                retries
+            ));
+        }
+    }
+
+    if let Some(ledger_seconds) = target.ledger_seconds {
+        if !(1.0..=60.0).contains(&ledger_seconds) {
+            return Err(format!(
+                "--ledger-seconds must be between 1.0 and 60.0 (got {})",
+                ledger_seconds
+            ));
+        }
+    }
+
+    let rpc_url = resolve_rpc_url(&target.network, target.rpc_url.as_deref())?;
+    let threshold_config = resolve_threshold_config(target.threshold, target.critical_threshold)?;
+    let instance_size_thresholds = InstanceSizeThresholds::try_new(
+        target.instance_size_warn_pct,
+        target.instance_size_critical_pct,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let rpc_timeout = Duration::from_secs(target.rpc_timeout.unwrap_or(10));
+    let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
+    if let Some(retries) = target.rpc_max_retries {
+        let mut policy = rpc_client.retry_policy().clone();
+        policy.max_retries = retries;
+        rpc_client = rpc_client.with_retry_policy(policy);
+    }
+
+    let request = ScanRequest::new(&target.contract_id)
+        .with_network(&target.network)
+        .with_threshold_config(threshold_config)
+        .with_instance_size_thresholds(instance_size_thresholds)
+        .with_persistent_symbols(target.key.clone())
+        .with_persistent_xdr_keys(target.key_xdr.clone())
+        .with_persistent_key_exprs(target.key_expr.clone())
+        .with_temporary_symbols(target.temp_key.clone())
+        .with_temporary_xdr_keys(target.temp_key_xdr.clone())
+        .with_ledger_seconds(target.ledger_seconds);
+
+    Ok((rpc_client, request))
 }
 
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
 pub async fn run_scan(args: ScanArgs) -> i32 {
-    // 1. Validate argument bounds before making any RPC calls
-    if let Some(timeout) = args.rpc_timeout {
-        if !(1..=120).contains(&timeout) {
-            eprintln!(
-                "Error: --rpc-timeout must be between 1 and 120 seconds (got {})",
-                timeout
-            );
+    // 1. Validate arguments before making any RPC calls
+    let (rpc_client, request) = match prepare_scan(&args.target) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            eprintln!("Error: {}", err);
             return EXIT_INVALID_ARGS;
         }
-    }
-
-    if let Some(retries) = args.rpc_max_retries {
-        if retries > 10 {
-            eprintln!(
-                "Error: --rpc-max-retries must be between 0 and 10 (got {})",
-                retries
-            );
-            return EXIT_INVALID_ARGS;
-        }
-    }
-
-    if let Some(ledger_seconds) = args.ledger_seconds {
-        if !(1.0..=60.0).contains(&ledger_seconds) {
-            eprintln!(
-                "Error: --ledger-seconds must be between 1.0 and 60.0 (got {})",
-                ledger_seconds
-            );
-            return EXIT_INVALID_ARGS;
-        }
-    }
+    };
 
     let baseline_snapshot = if let Some(ref path) = args.baseline {
-        match load_and_validate_baseline(path, &args.contract_id, &args.network) {
+        match load_and_validate_baseline(path, &args.target.contract_id, &args.target.network) {
             Ok(s) => Some(s),
             Err(err) => {
                 eprintln!("Error: {}", err);
@@ -185,75 +254,18 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         None
     };
 
-    let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
-        Ok(url) => url,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
-    let threshold_config = match resolve_threshold_config(args.threshold, args.critical_threshold) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
-    let instance_size_thresholds = match InstanceSizeThresholds::try_new(
-        args.instance_size_warn_pct,
-        args.instance_size_critical_pct,
-    ) {
-        Ok(thresholds) => thresholds,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
-    let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
-    let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
-    if let Some(retries) = args.rpc_max_retries {
-        let mut policy = rpc_client.retry_policy().clone();
-        policy.max_retries = retries;
-        rpc_client = rpc_client.with_retry_policy(policy);
-    }
-
     let usecase = ScanContractUseCase::new(rpc_client);
-
-    let mut request = ScanRequest::new(&args.contract_id)
-        .with_network(&args.network)
-        .with_threshold_config(threshold_config)
-        .with_instance_size_thresholds(instance_size_thresholds)
-        .with_persistent_symbols(args.key)
-        .with_persistent_xdr_keys(args.key_xdr)
-        .with_persistent_key_exprs(args.key_expr)
-        .with_temporary_symbols(args.temp_key)
-        .with_temporary_xdr_keys(args.temp_key_xdr);
-
-    if let Some(ls) = args.ledger_seconds {
-        request = request.with_ledger_seconds(Some(ls));
-    }
-
     let report = match usecase.execute(request).await {
         Ok(r) => r,
         Err(err) => {
             eprintln!("Error: {}", err);
-            return match err {
-                SentinelError::InvalidContractAddress(_)
-                | SentinelError::InvalidXdrKey(_)
-                | SentinelError::InvalidThresholdConfig(_)
-                | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
-                SentinelError::RpcConnectionTimeout(_)
-                | SentinelError::RpcResponseError { .. }
-                | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
-                _ => EXIT_INVALID_ARGS,
-            };
+            return exit_code_for_error(&err);
         }
     };
 
-    warn_if_entry_size_limit_unavailable(&report);
+    if let Some(note) = entry_size_limit_note(&report) {
+        eprintln!("{}", note);
+    }
 
     let baseline_diff = baseline_snapshot
         .as_ref()
@@ -279,11 +291,7 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
             if args.fail_on_regression && diff_has_regression {
                 EXIT_CRITICAL_OR_ARCHIVED
             } else {
-                match report.overall_status {
-                    RiskLevel::Ok => EXIT_OK,
-                    RiskLevel::Warn => EXIT_WARN,
-                    RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
-                }
+                exit_code_for_status(report.overall_status)
             }
         }
         Err(err) => {
