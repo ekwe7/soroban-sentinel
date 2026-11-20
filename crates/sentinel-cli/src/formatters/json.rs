@@ -38,11 +38,11 @@ pub struct JsonSummary {
 /// Individual storage entry report conforming to published JSON schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonEntryReport {
-    /// Identifier of the entry (e.g., "instance", "code_wasm", "persistent:Admin").
+    /// Identifier of the entry (e.g., "instance", "code_wasm", "persistent:Admin", "temporary:NONCE").
     pub identifier: String,
     /// Classification type (e.g., "contract_instance", "contract_code", "contract_data").
     pub entry_type: String,
-    /// Durability tier (e.g., "instance", "code", "persistent").
+    /// Durability tier (e.g., "instance", "code", "persistent", "temporary").
     pub durability: String,
     /// Serialized size in bytes.
     pub size_bytes: usize,
@@ -56,6 +56,10 @@ pub struct JsonEntryReport {
     pub estimated_remaining_days: f64,
     /// Lowercase risk status (e.g., "ok", "warn", "critical", "archived").
     pub status: String,
+    /// `true` when a temporary entry is missing or expired: it is deleted permanently and
+    /// cannot be restored. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unrecoverable: bool,
 }
 
 impl From<&TTLReport> for JsonTTLReport {
@@ -76,7 +80,8 @@ impl From<&TTLReport> for JsonTTLReport {
                 let entry_type_str = match entry.entry_type {
                     sentinel_core::domain::EntryType::ContractInstance => "contract_instance",
                     sentinel_core::domain::EntryType::ContractCode => "contract_code",
-                    sentinel_core::domain::EntryType::PersistentData => "contract_data",
+                    sentinel_core::domain::EntryType::PersistentData
+                    | sentinel_core::domain::EntryType::TemporaryData => "contract_data",
                 };
 
                 JsonEntryReport {
@@ -89,6 +94,7 @@ impl From<&TTLReport> for JsonTTLReport {
                     estimated_remaining_seconds: entry.estimated_remaining_seconds,
                     estimated_remaining_days: (entry.remaining_days * 100.0).round() / 100.0,
                     status: entry.status.to_string().to_lowercase(),
+                    unrecoverable: entry.is_unrecoverable(),
                 }
             })
             .collect();
@@ -278,5 +284,54 @@ mod tests {
 
         assert_eq!(parsed["summary"]["total_entries"], 0);
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_render_json_temporary_entries() {
+        let report = TTLReport {
+            contract_id: "CTEMP".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![
+                StorageEntryReport::new(
+                    "temporary:NONCE",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    48,
+                    5_450_000,
+                    50_000,
+                    250_000.0,
+                    2.89,
+                    RiskLevel::Warn,
+                ),
+                StorageEntryReport::new(
+                    "temporary:SESSION",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+            ],
+            overall_status: RiskLevel::Archived,
+            archival_recommendations: Vec::new(),
+        };
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&render_json(&report).unwrap()).unwrap();
+        let live = &parsed["entries"][0];
+        assert_eq!(live["identifier"], "temporary:NONCE");
+        assert_eq!(live["durability"], "temporary");
+        assert_eq!(live["entry_type"], "contract_data");
+        assert!(live.get("unrecoverable").is_none());
+
+        let gone = &parsed["entries"][1];
+        assert_eq!(gone["identifier"], "temporary:SESSION");
+        assert_eq!(gone["status"], "archived");
+        assert_eq!(gone["unrecoverable"], true);
     }
 }

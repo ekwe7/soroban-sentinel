@@ -39,7 +39,7 @@ pub fn format_with_commas<T: std::fmt::Display>(val: T) -> String {
 }
 
 /// Resolves a human-friendly display label for an entry identifier.
-fn format_entry_description(key_identifier: &str) -> String {
+pub(crate) fn format_entry_description(key_identifier: &str) -> String {
     match key_identifier {
         "instance" => "Contract Instance".to_string(),
         "code_wasm" => "Contract Code (WASM)".to_string(),
@@ -50,6 +50,15 @@ fn format_entry_description(key_identifier: &str) -> String {
             format!(
                 "Persistent Key (XDR): {}",
                 id.trim_start_matches("persistent_xdr:")
+            )
+        }
+        id if id.starts_with("temporary:") => {
+            format!("Temporary Key: {}", id.trim_start_matches("temporary:"))
+        }
+        id if id.starts_with("temporary_xdr:") => {
+            format!(
+                "Temporary Key (XDR): {}",
+                id.trim_start_matches("temporary_xdr:")
             )
         }
         other => other.to_string(),
@@ -122,6 +131,12 @@ pub fn render_text(report: &TTLReport) -> String {
         "Summary: {} entries checked. {} OK, {} WARN, {} CRITICAL/ARCHIVED.",
         summary.total_entries, summary.ok, summary.warn, crit_or_archived
     );
+    let notes: String = report
+        .entries
+        .iter()
+        .filter_map(entry_note)
+        .map(|note| format!("\n{}", note))
+        .collect();
 
     let header_line = format!(
         "Contract: {} | Network: {} | Latest Ledger: {} (Velocity: {:.1}s/ledger)",
@@ -131,7 +146,17 @@ pub fn render_text(report: &TTLReport) -> String {
         report.ledger_velocity_seconds
     );
 
-    format!("{}\n{}\n{}", header_line, table, summary_line)
+    format!("{}\n{}\n{}{}", header_line, table, summary_line, notes)
+}
+
+/// Explains statuses the table alone cannot convey, such as an unrecoverable temporary entry.
+pub(crate) fn entry_note(entry: &StorageEntryReport) -> Option<String> {
+    entry.is_unrecoverable().then(|| {
+        format!(
+            "UNRECOVERABLE: {} is missing or expired. Temporary entries are deleted permanently and cannot be restored.",
+            format_entry_description(&entry.key_identifier)
+        )
+    })
 }
 
 /// Formats a change category into a styled table cell.
@@ -370,5 +395,63 @@ mod tests {
         assert!(output.contains("ARCHIVED"));
         assert!(output.contains("CRITICAL"));
         assert!(output.contains("Summary: 2 entries checked. 0 OK, 0 WARN, 2 CRITICAL/ARCHIVED."));
+    }
+
+    #[test]
+    fn test_render_text_labels_temporary_entries_and_flags_unrecoverable() {
+        let report = TTLReport {
+            contract_id: "CTEMP".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![
+                StorageEntryReport::new(
+                    "temporary:NONCE",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    48,
+                    5_450_000,
+                    50_000,
+                    250_000.0,
+                    2.89,
+                    RiskLevel::Warn,
+                ),
+                StorageEntryReport::new(
+                    "temporary_xdr:AAAAAw==",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+                StorageEntryReport::new(
+                    "persistent:Gone",
+                    EntryType::PersistentData,
+                    Durability::Persistent,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+            ],
+            overall_status: RiskLevel::Archived,
+            archival_recommendations: Vec::new(),
+        };
+
+        let output = render_text(&report);
+        assert!(output.contains("Temporary Key: NONCE"));
+        assert!(output.contains("Temporary Key (XDR): AAAAAw=="));
+        assert!(output.contains("Temporary"));
+        assert!(output.contains(
+            "UNRECOVERABLE: Temporary Key (XDR): AAAAAw== is missing or expired. Temporary entries are deleted permanently and cannot be restored."
+        ));
+        // A live temporary entry and an archived persistent entry are not unrecoverable.
+        assert!(!output.contains("UNRECOVERABLE: Temporary Key: NONCE"));
+        assert!(!output.contains("UNRECOVERABLE: Persistent Key: Gone"));
     }
 }

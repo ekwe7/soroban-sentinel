@@ -196,7 +196,9 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         .with_threshold_config(threshold_config)
         .with_persistent_symbols(args.key)
         .with_persistent_xdr_keys(args.key_xdr)
-        .with_persistent_key_exprs(args.key_expr);
+        .with_persistent_key_exprs(args.key_expr)
+        .with_temporary_symbols(args.temp_key)
+        .with_temporary_xdr_keys(args.temp_key_xdr);
 
     if let Some(ls) = args.ledger_seconds {
         request = request.with_ledger_seconds(Some(ls));

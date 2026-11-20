@@ -612,3 +612,89 @@ async fn test_cli_scan_baseline_comparison() {
 
     let _ = std::fs::remove_file(temp_baseline);
 }
+
+mod common;
+
+// Temporary keys (--temp-key / --temp-key-xdr) combined with persistent keys in one scan
+#[tokio::test]
+async fn test_cli_scan_temporary_keys_end_to_end() {
+    use sentinel_core::adapters::{derive_persistent_symbol_key, derive_temporary_symbol_key};
+    use stellar_xdr::curr::ScSymbol;
+
+    let mock_server = MockServer::start().await;
+    let contract_id = [70u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let nonce = ScVal::Symbol(ScSymbol("NONCE".try_into().unwrap()));
+    let missing_xdr = ScVal::U32(404).to_xdr_base64(Limits::none()).unwrap();
+
+    common::mount_ledger(
+        &mock_server,
+        5_400_000,
+        vec![
+            (
+                derive_contract_instance_key(&contract_id).unwrap(),
+                common::instance_entry_xdr(contract_id, None),
+                5_600_000,
+            ),
+            (
+                derive_persistent_symbol_key(&contract_id, "NONCE").unwrap(),
+                common::data_entry_xdr(
+                    contract_id,
+                    nonce.clone(),
+                    ContractDataDurability::Persistent,
+                ),
+                5_600_000,
+            ),
+            (
+                derive_temporary_symbol_key(&contract_id, "NONCE").unwrap(),
+                common::data_entry_xdr(contract_id, nonce, ContractDataDurability::Temporary),
+                5_600_000,
+            ),
+        ],
+    )
+    .await;
+
+    let args = [
+        "scan",
+        &contract_strkey,
+        "--rpc-url",
+        &mock_server.uri(),
+        "--key",
+        "NONCE",
+        "--temp-key",
+        "NONCE",
+        "--temp-key-xdr",
+        &missing_xdr,
+    ];
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(args)
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("Persistent Key: NONCE"))
+        .stdout(predicate::str::contains("Temporary Key: NONCE"))
+        .stdout(predicate::str::contains(format!(
+            "UNRECOVERABLE: Temporary Key (XDR): {} is missing or expired",
+            missing_xdr
+        )));
+
+    let output = Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(args)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let entries = parsed["entries"].as_array().unwrap();
+    let find = |id: &str| entries.iter().find(|e| e["identifier"] == id).unwrap();
+    assert_eq!(find("persistent:NONCE")["durability"], "persistent");
+    let temp = find("temporary:NONCE");
+    assert_eq!(temp["durability"], "temporary");
+    assert_eq!(temp["status"], "ok");
+    let missing = find(&format!("temporary_xdr:{}", missing_xdr));
+    assert_eq!(missing["durability"], "temporary");
+    assert_eq!(missing["status"], "archived");
+    assert_eq!(missing["unrecoverable"], true);
+}

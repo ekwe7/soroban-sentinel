@@ -7,8 +7,9 @@ use stellar_xdr::curr::{ReadXdr, WriteXdr};
 
 use crate::adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
-    derive_persistent_symbol_key, derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry,
-    parse_contract_id, parse_key_expr, safe_xdr_limits,
+    derive_persistent_symbol_key, derive_persistent_xdr_key, derive_temporary_symbol_key,
+    derive_temporary_xdr_key, extract_wasm_hash_from_instance_entry, parse_contract_id,
+    parse_key_expr, safe_xdr_limits,
 };
 use crate::domain::cold_storage::{
     recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
@@ -32,6 +33,12 @@ pub struct ScanRequest {
     pub persistent_xdr_keys: Vec<String>,
     /// List of persistent storage keys encoded as typed expressions (e.g. `["vec[sym:Balance, addr:G...]"]`).
     pub persistent_key_exprs: Vec<String>,
+    /// List of temporary storage symbol keys to monitor (e.g. `["NONCE"]`).
+    #[serde(default)]
+    pub temporary_symbols: Vec<String>,
+    /// List of temporary storage keys encoded as base64 `ScVal` XDR strings.
+    #[serde(default)]
+    pub temporary_xdr_keys: Vec<String>,
     /// Threshold configuration for warning and critical expiry evaluation.
     pub threshold_config: ThresholdConfig,
     /// Target network descriptor (e.g. "testnet", "mainnet", etc.).
@@ -48,6 +55,8 @@ impl ScanRequest {
             persistent_symbols: Vec::new(),
             persistent_xdr_keys: Vec::new(),
             persistent_key_exprs: Vec::new(),
+            temporary_symbols: Vec::new(),
+            temporary_xdr_keys: Vec::new(),
             threshold_config: ThresholdConfig::default(),
             network: None,
             ledger_seconds_override: None,
@@ -69,6 +78,18 @@ impl ScanRequest {
     /// Add persistent typed key expressions to the request.
     pub fn with_persistent_key_exprs(mut self, exprs: Vec<String>) -> Self {
         self.persistent_key_exprs = exprs;
+        self
+    }
+
+    /// Add temporary symbol keys to the request.
+    pub fn with_temporary_symbols(mut self, symbols: Vec<String>) -> Self {
+        self.temporary_symbols = symbols;
+        self
+    }
+
+    /// Add temporary base64 XDR keys to the request.
+    pub fn with_temporary_xdr_keys(mut self, xdr_keys: Vec<String>) -> Self {
+        self.temporary_xdr_keys = xdr_keys;
         self
     }
 
@@ -112,9 +133,9 @@ pub struct StorageEntryReport {
     /// Human-readable or base64 key identifier (e.g., "instance", "code_wasm", "persistent:COUNTER").
     #[serde(alias = "identifier")]
     pub key_identifier: String,
-    /// Entry type classification (ContractInstance, ContractCode, PersistentData).
+    /// Entry type classification (ContractInstance, ContractCode, PersistentData, TemporaryData).
     pub entry_type: EntryType,
-    /// Durability tier (Instance, Code, Persistent).
+    /// Durability tier (Instance, Code, Persistent, Temporary).
     pub durability: Durability,
     /// Byte size of the entry.
     #[serde(alias = "size_bytes")]
@@ -157,6 +178,12 @@ impl StorageEntryReport {
             remaining_days,
             status,
         }
+    }
+
+    /// Whether the entry is gone for good: a temporary entry that is missing or expired is
+    /// deleted permanently and, unlike persistent data, cannot be restored.
+    pub fn is_unrecoverable(&self) -> bool {
+        self.durability == Durability::Temporary && self.status == RiskLevel::Archived
     }
 }
 
@@ -259,6 +286,34 @@ fn compute_byte_size(entry_xdr_base64: &str) -> usize {
     }
 }
 
+/// A contract-data key to inspect, with the report identity it is published under.
+struct DataKeyDescriptor {
+    ident: String,
+    key_xdr: String,
+    entry_type: EntryType,
+    durability: Durability,
+}
+
+impl DataKeyDescriptor {
+    fn persistent(ident: String, key_xdr: String) -> Self {
+        Self {
+            ident,
+            key_xdr,
+            entry_type: EntryType::PersistentData,
+            durability: Durability::Persistent,
+        }
+    }
+
+    fn temporary(ident: String, key_xdr: String) -> Self {
+        Self {
+            ident,
+            key_xdr,
+            entry_type: EntryType::TemporaryData,
+            durability: Durability::Temporary,
+        }
+    }
+}
+
 /// Application orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 pub struct ScanContractUseCase<R: LedgerReader> {
     reader: R,
@@ -319,27 +374,51 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             }
         };
 
-        // 2. Derive persistent keys from symbols, base64 ScVal, and typed key expressions
-        let mut persistent_descriptors: Vec<(String, String)> = Vec::new();
+        // 2. Derive contract-data keys: persistent keys from symbols, base64 ScVal, and typed
+        // key expressions, then temporary keys from symbols and base64 ScVal.
+        let mut data_descriptors: Vec<DataKeyDescriptor> = Vec::new();
         for sym in &request.persistent_symbols {
             let key_xdr = derive_persistent_symbol_key(&contract_id_bytes, sym)?;
-            persistent_descriptors.push((format!("persistent:{}", sym), key_xdr));
+            data_descriptors.push(DataKeyDescriptor::persistent(
+                format!("persistent:{}", sym),
+                key_xdr,
+            ));
         }
         for xdr_key in &request.persistent_xdr_keys {
             let key_xdr = derive_persistent_xdr_key(&contract_id_bytes, xdr_key)?;
-            persistent_descriptors.push((format!("persistent_xdr:{}", xdr_key), key_xdr));
+            data_descriptors.push(DataKeyDescriptor::persistent(
+                format!("persistent_xdr:{}", xdr_key),
+                key_xdr,
+            ));
         }
         for expr in &request.persistent_key_exprs {
             let scval = parse_key_expr(expr)?;
             let key_xdr = derive_persistent_key_from_scval(&contract_id_bytes, scval)?;
-            persistent_descriptors.push((format!("persistent:{}", expr), key_xdr));
+            data_descriptors.push(DataKeyDescriptor::persistent(
+                format!("persistent:{}", expr),
+                key_xdr,
+            ));
+        }
+        for sym in &request.temporary_symbols {
+            let key_xdr = derive_temporary_symbol_key(&contract_id_bytes, sym)?;
+            data_descriptors.push(DataKeyDescriptor::temporary(
+                format!("temporary:{}", sym),
+                key_xdr,
+            ));
+        }
+        for xdr_key in &request.temporary_xdr_keys {
+            let key_xdr = derive_temporary_xdr_key(&contract_id_bytes, xdr_key)?;
+            data_descriptors.push(DataKeyDescriptor::temporary(
+                format!("temporary_xdr:{}", xdr_key),
+                key_xdr,
+            ));
         }
 
-        // 3. Query initial batch: instance key + persistent keys
-        let mut query_keys: Vec<String> = Vec::with_capacity(1 + persistent_descriptors.len());
+        // 3. Query initial batch: instance key + every contract-data key
+        let mut query_keys: Vec<String> = Vec::with_capacity(1 + data_descriptors.len());
         query_keys.push(instance_key_xdr.clone());
-        for (_, key_xdr) in &persistent_descriptors {
-            query_keys.push(key_xdr.clone());
+        for descriptor in &data_descriptors {
+            query_keys.push(descriptor.key_xdr.clone());
         }
 
         let raw_entries = self.reader.get_ledger_entries(&query_keys).await?;
@@ -443,8 +522,14 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         let mut archival_recommendations = Vec::new();
         let mut evaluated_keys = HashSet::new();
 
-        // 6. Process Persistent entries
-        for (ident, key_xdr) in persistent_descriptors {
+        // 6. Process contract-data entries (persistent and temporary)
+        for descriptor in data_descriptors {
+            let DataKeyDescriptor {
+                ident,
+                key_xdr,
+                entry_type,
+                durability,
+            } = descriptor;
             let found_entry = raw_entries.iter().find(|e| e.key_xdr_base64 == key_xdr);
 
             if let Some(entry) = found_entry {
@@ -456,7 +541,13 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 let remaining_days = estimate_remaining_days(remaining_seconds);
                 let status = evaluate_risk(remaining_ledgers, &request.threshold_config);
 
-                if let Some((policy, histories)) = &self.archival {
+                // Archival advice applies only to persistent data: temporary entries are
+                // deleted on expiry and cannot be restored.
+                let archival = self
+                    .archival
+                    .as_ref()
+                    .filter(|_| durability == Durability::Persistent);
+                if let Some((policy, histories)) = archival {
                     if let Some(history) = histories.get(&key_xdr) {
                         if key_xdr != instance_key_xdr && evaluated_keys.insert(key_xdr) {
                             let profile = StorageEntry::new(
@@ -480,8 +571,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
 
                 reports.push(StorageEntryReport::new(
                     ident,
-                    EntryType::PersistentData,
-                    Durability::Persistent,
+                    entry_type,
+                    durability,
                     byte_size,
                     live_until,
                     remaining_ledgers,
@@ -490,11 +581,11 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     status,
                 ));
             } else {
-                // Missing/archived persistent entry
+                // Missing/archived entry (a missing temporary entry is permanently deleted)
                 reports.push(StorageEntryReport::new(
                     ident,
-                    EntryType::PersistentData,
-                    Durability::Persistent,
+                    entry_type,
+                    durability,
                     0,
                     0,
                     0,
@@ -543,6 +634,21 @@ mod tests {
             }),
         });
         entry_data.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_test_stellar_asset_instance_xdr(contract_id: [u8; 32]) -> String {
+        LedgerEntryData::ContractData(ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(Hash(contract_id)),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: ScVal::ContractInstance(ScContractInstance {
+                executable: ContractExecutable::StellarAsset,
+                storage: None,
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap()
     }
 
     fn make_test_code_xdr(wasm_hash: [u8; 32], code_bytes: &[u8]) -> String {
@@ -794,6 +900,113 @@ mod tests {
             .entries
             .iter()
             .any(|e| e.status == RiskLevel::Critical));
+    }
+
+    #[tokio::test]
+    async fn test_scan_temporary_keys_found_and_missing_alongside_persistent() {
+        let contract_bytes = [60u8; 32];
+        let contract_strkey = stellar_strkey::Contract(contract_bytes).to_string();
+
+        let instance_key = derive_contract_instance_key(&contract_bytes).unwrap();
+        let instance_entry = RawLedgerEntry::new(
+            &instance_key,
+            make_test_stellar_asset_instance_xdr(contract_bytes),
+            5_600_000,
+            5_400_000,
+        );
+
+        // Same symbol in both tiers: they are distinct ledger entries.
+        let persistent_key = derive_persistent_symbol_key(&contract_bytes, "NONCE").unwrap();
+        let temporary_key =
+            crate::adapters::derive_temporary_symbol_key(&contract_bytes, "NONCE").unwrap();
+        assert_ne!(persistent_key, temporary_key);
+        let temporary_entry_xdr = LedgerEntryData::ContractData(ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(Hash(contract_bytes)),
+            key: ScVal::Symbol(ScSymbol("NONCE".try_into().unwrap())),
+            durability: ContractDataDurability::Temporary,
+            val: ScVal::U64(1),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let persistent_entry = RawLedgerEntry::new(
+            &persistent_key,
+            make_test_persistent_symbol_xdr(contract_bytes, "NONCE", 3),
+            5_700_000,
+            5_400_000,
+        );
+        // 50_000 ledgers remaining -> WARN
+        let temporary_entry =
+            RawLedgerEntry::new(&temporary_key, &temporary_entry_xdr, 5_450_000, 5_400_000);
+
+        let missing_scval = ScVal::U32(404).to_xdr_base64(Limits::none()).unwrap();
+
+        let mock_reader = MockLedgerReader::new()
+            .with_latest_ledger(5_400_000, 22)
+            .with_entry(instance_entry)
+            .with_entry(persistent_entry)
+            .with_entry(temporary_entry);
+        let usecase = ScanContractUseCase::new(mock_reader);
+        let request = ScanRequest::new(&contract_strkey)
+            .with_persistent_symbols(vec!["NONCE".to_string()])
+            .with_temporary_symbols(vec!["NONCE".to_string()])
+            .with_temporary_xdr_keys(vec![missing_scval.clone()]);
+
+        let report = usecase.execute(request).await.unwrap();
+        let ids: Vec<&str> = report
+            .entries
+            .iter()
+            .map(|e| e.key_identifier.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "instance".to_string(),
+                "persistent:NONCE".to_string(),
+                "temporary:NONCE".to_string(),
+                format!("temporary_xdr:{}", missing_scval),
+            ]
+        );
+
+        let persistent = &report.entries[1];
+        assert_eq!(persistent.durability, Durability::Persistent);
+        assert_eq!(persistent.live_until_ledger, 5_700_000);
+
+        let found = &report.entries[2];
+        assert_eq!(found.entry_type, EntryType::TemporaryData);
+        assert_eq!(found.durability, Durability::Temporary);
+        assert_eq!(found.live_until_ledger, 5_450_000);
+        assert_eq!(found.remaining_ledgers, 50_000);
+        assert_eq!(found.status, RiskLevel::Warn);
+        assert!(found.byte_size > 0);
+
+        let missing = &report.entries[3];
+        assert_eq!(missing.entry_type, EntryType::TemporaryData);
+        assert_eq!(missing.durability, Durability::Temporary);
+        assert_eq!(missing.live_until_ledger, 0);
+        assert_eq!(missing.status, RiskLevel::Archived);
+        assert_eq!(report.overall_status, RiskLevel::Archived);
+    }
+
+    #[tokio::test]
+    async fn test_scan_rejects_invalid_temporary_keys() {
+        let contract_strkey = stellar_strkey::Contract([61u8; 32]).to_string();
+        let usecase =
+            ScanContractUseCase::new(MockLedgerReader::new().with_latest_ledger(5_400_000, 22));
+
+        let bad_symbol =
+            ScanRequest::new(&contract_strkey).with_temporary_symbols(vec!["a".repeat(33)]);
+        assert!(matches!(
+            usecase.execute(bad_symbol).await,
+            Err(crate::error::SentinelError::InvalidXdrKey(_))
+        ));
+
+        let bad_xdr =
+            ScanRequest::new(&contract_strkey).with_temporary_xdr_keys(vec!["%%%".to_string()]);
+        assert!(matches!(
+            usecase.execute(bad_xdr).await,
+            Err(crate::error::SentinelError::InvalidXdrKey(_))
+        ));
     }
 
     #[test]

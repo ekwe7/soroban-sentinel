@@ -57,6 +57,14 @@ pub struct ScanArgs {
     #[arg(long = "key-expr", value_name = "EXPR")]
     pub key_expr: Vec<String>,
 
+    /// Temporary storage key symbol to inspect (can be specified multiple times). Expired temporary entries are deleted permanently.
+    #[arg(long = "temp-key", value_name = "SYMBOL")]
+    pub temp_key: Vec<String>,
+
+    /// Temporary storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
+    #[arg(long = "temp-key-xdr", value_name = "BASE64_XDR")]
+    pub temp_key_xdr: Vec<String>,
+
     /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
     #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
     pub threshold: u32,
@@ -165,6 +173,8 @@ mod tests {
                 assert!(scan.key.is_empty());
                 assert!(scan.key_xdr.is_empty());
                 assert!(scan.key_expr.is_empty());
+                assert!(scan.temp_key.is_empty());
+                assert!(scan.temp_key_xdr.is_empty());
                 assert!(scan.rpc_timeout.is_none());
                 assert!(scan.rpc_max_retries.is_none());
                 assert!(scan.ledger_seconds.is_none());
@@ -199,6 +209,12 @@ mod tests {
             "sym:Balance",
             "--key-expr",
             "vec[sym:Data, u32:1]",
+            "--temp-key",
+            "NONCE",
+            "--temp-key",
+            "SESSION",
+            "--temp-key-xdr",
+            "AAAAAw==",
             "--rpc-timeout",
             "30",
             "--rpc-max-retries",
@@ -226,6 +242,8 @@ mod tests {
                 assert_eq!(scan.key, vec!["COUNTER", "ADMIN"]);
                 assert_eq!(scan.key_xdr, vec!["AAAAFA=="]);
                 assert_eq!(scan.key_expr, vec!["sym:Balance", "vec[sym:Data, u32:1]"]);
+                assert_eq!(scan.temp_key, vec!["NONCE", "SESSION"]);
+                assert_eq!(scan.temp_key_xdr, vec!["AAAAAw=="]);
                 assert_eq!(scan.rpc_timeout, Some(30));
                 assert_eq!(scan.rpc_max_retries, Some(5));
                 assert_eq!(scan.ledger_seconds, Some(5.5));
