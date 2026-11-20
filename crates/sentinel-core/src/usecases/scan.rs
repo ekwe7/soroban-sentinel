@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use stellar_xdr::curr::{ReadXdr, WriteXdr};
+use tracing::info;
 
 use crate::adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
@@ -355,8 +356,11 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             .clone()
             .unwrap_or_else(|| "testnet".to_string());
 
+        info!(contract_id = %request.contract_id_strkey, "scan_started");
+
         // 1. Derive deterministic ContractInstance key
         let instance_key_xdr = derive_contract_instance_key(&contract_id_bytes)?;
+        info!(?instance_key_xdr, "instance_key_derived");
 
         // Resolve ledger close velocity: explicit CLI override, or query getLedgers from RPC, or default 5.0s
         let ledger_velocity = if let Some(ov) = request.ledger_seconds_override {
@@ -371,6 +375,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 _ => TARGET_LEDGER_CLOSE_SECONDS,
             }
         };
+        info!(ledger_velocity = %ledger_velocity, "ledger_velocity_resolved");
 
         // 2. Derive persistent keys from symbols, base64 ScVal, and typed key expressions
         let mut persistent_descriptors: Vec<(String, String)> = Vec::new();
@@ -387,6 +392,10 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             let key_xdr = derive_persistent_key_from_scval(&contract_id_bytes, scval)?;
             persistent_descriptors.push((format!("persistent:{}", expr), key_xdr));
         }
+        info!(
+            persistent_key_count = persistent_descriptors.len(),
+            "persistent_keys_derived"
+        );
 
         // 3. Query initial batch: instance key + persistent keys
         let mut query_keys: Vec<String> = Vec::with_capacity(1 + persistent_descriptors.len());
@@ -396,6 +405,11 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         }
 
         let raw_entries = self.reader.get_ledger_entries(&query_keys).await?;
+        info!(
+            ?query_keys,
+            entry_count = raw_entries.len(),
+            "ledger_entries_queried"
+        );
 
         let mut reports = Vec::new();
 
@@ -445,6 +459,13 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             wasm_hash_opt = extract_wasm_hash_from_instance_entry(&entry.entry_xdr_base64)
                 .ok()
                 .flatten();
+            let wasm_hash_str = wasm_hash_opt
+                .map(|h| format!("{:?}", h))
+                .unwrap_or_else(|| "none".to_string());
+            info!(
+                "instance_processed: wasm_hash={} byte_size={} status={}",
+                wasm_hash_str, byte_size, status
+            );
         } else {
             // Missing/archived instance entry
             reports.push(StorageEntryReport::new(
@@ -458,6 +479,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 0.0,
                 RiskLevel::Archived,
             ));
+            info!("instance_entry_missing, status=archived");
         }
 
         // 5. Process ContractCode entry (if WASM executable exists)
@@ -471,7 +493,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 .into_iter()
                 .find(|e| e.key_xdr_base64 == code_key_xdr);
 
-            if let Some(code_entry) = code_entry_opt {
+            if let Some(ref code_entry) = code_entry_opt {
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
                 let live_until = code_entry.live_until_ledger_seq;
                 let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
@@ -480,6 +502,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 let remaining_days = estimate_remaining_days(remaining_seconds);
                 let status = evaluate_risk(remaining_ledgers, &request.threshold_config);
 
+                let code_entry_str = code_entry.key_xdr_base64.clone();
                 reports.push(StorageEntryReport::new(
                     "code_wasm",
                     EntryType::ContractCode,
@@ -491,6 +514,10 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     remaining_days,
                     status,
                 ));
+                info!(
+                    "code_processed: code_entry={} byte_size={} status={}",
+                    code_entry_str, byte_size, status
+                );
             } else {
                 // Missing/archived code entry
                 reports.push(StorageEntryReport::new(
@@ -504,6 +531,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     0.0,
                     RiskLevel::Archived,
                 ));
+                info!("code_entry_missing, status=archived");
             }
         }
 
@@ -511,6 +539,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         let mut evaluated_keys = HashSet::new();
 
         // 6. Process Persistent entries
+        let persistent_count = persistent_descriptors.len();
         for (ident, key_xdr) in persistent_descriptors {
             let found_entry = raw_entries.iter().find(|e| e.key_xdr_base64 == key_xdr);
 
@@ -571,11 +600,20 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 ));
             }
         }
+        info!(
+            persistent_processed = persistent_count,
+            "persistent_entries_processed"
+        );
 
         let overall_status = compute_overall_status(&reports);
         let span = tracing::Span::current();
         span.record("entry.count", reports.len() as u64);
         span.record("overall.status", tracing::field::display(overall_status));
+
+        info!(
+            overall_status = %overall_status,
+            total_entries = reports.len(),
+        );
 
         Ok(TTLReport {
             contract_id: request.contract_id_strkey,

@@ -214,6 +214,148 @@ async fn test_cli_scan_json_format_outputs_valid_schema() {
     assert_eq!(parsed["entries"][0]["identifier"], "instance");
 }
 
+#[tokio::test]
+async fn test_cli_scan_verbose_logs_to_stderr_without_polluting_json_stdout() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [7u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let instance_key = derive_contract_instance_key(&contract_id).unwrap();
+    let instance_xdr = make_instance_xdr(contract_id);
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["method"].as_str().unwrap() {
+                "getLatestLedger" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "sequence": 5_400_000,
+                        "protocolVersion": 22
+                    }
+                })),
+                "getLedgerEntries" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "latestLedger": 5_400_000,
+                        "entries": [{
+                            "key": instance_key,
+                            "xdr": instance_xdr,
+                            "liveUntilLedgerSeq": 5_600_000,
+                            "lastModifiedLedgerSeq": 5_390_000
+                        }]
+                    }
+                })),
+                other => panic!("Unexpected method: {}", other),
+            }
+        })
+        .mount(&mock_server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        &contract_strkey,
+        "--rpc-url",
+        &mock_server.uri(),
+        "--format",
+        "json",
+        "-v",
+    ]);
+
+    let assert = cmd.assert().code(0);
+    let output = assert.get_output();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rpc_request"),
+        "expected RPC diagnostics on stderr, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains(&contract_strkey),
+        "expected scan diagnostics on stderr, got: {}",
+        stderr
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("rpc_request"),
+        "diagnostics must not pollute stdout JSON: {}",
+        stdout
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must remain valid JSON with -v");
+    assert_eq!(parsed["contract_id"], contract_strkey);
+}
+
+#[tokio::test]
+async fn test_cli_scan_verbose_json_log_format_emits_json_lines() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [8u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let instance_key = derive_contract_instance_key(&contract_id).unwrap();
+    let instance_xdr = make_instance_xdr(contract_id);
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["method"].as_str().unwrap() {
+                "getLatestLedger" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "sequence": 5_400_000, "protocolVersion": 22 }
+                })),
+                "getLedgerEntries" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "latestLedger": 5_400_000,
+                        "entries": [{
+                            "key": instance_key,
+                            "xdr": instance_xdr,
+                            "liveUntilLedgerSeq": 5_600_000,
+                            "lastModifiedLedgerSeq": 5_390_000
+                        }]
+                    }
+                })),
+                other => panic!("Unexpected method: {}", other),
+            }
+        })
+        .mount(&mock_server)
+        .await;
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        &contract_strkey,
+        "--rpc-url",
+        &mock_server.uri(),
+        "--format",
+        "json",
+        "-v",
+        "--log-format",
+        "json",
+    ]);
+
+    let assert = cmd.assert().code(0);
+    let output = assert.get_output();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()),
+        "expected at least one JSON diagnostic line on stderr, got: {}",
+        stderr
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must remain valid JSON");
+    assert_eq!(parsed["contract_id"], contract_strkey);
+}
+
 // Test D: Malformed Strkey -> asserts stderr error message and exit code 10
 #[test]
 fn test_cli_scan_malformed_strkey_returns_exit_code_10() {

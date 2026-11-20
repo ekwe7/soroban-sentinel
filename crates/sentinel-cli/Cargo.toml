@@ -29,6 +29,7 @@ serde_json.workspace = true
 comfy-table.workspace = true
 csv.workspace = true
 thiserror.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 reqwest.workspace = true
 stellar-xdr.workspace = true
 stellar-strkey.workspace = true
@@ -36,7 +37,6 @@ toml = "0.8"
 ratatui = { version = "0.26", default-features = false, features = ["crossterm"], optional = true }
 crossterm = { version = "0.27", optional = true }
 tracing.workspace = true
-tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
