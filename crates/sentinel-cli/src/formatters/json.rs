@@ -174,6 +174,7 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Warn,
+            archival_recommendations: Vec::new(),
         };
 
         let json_str = render_json(&report).expect("Should serialize cleanly to JSON");
@@ -245,6 +246,7 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries,
             overall_status: RiskLevel::Ok,
+            archival_recommendations: Vec::new(),
         };
 
         let json_str = render_json(&report).unwrap();
@@ -268,6 +270,7 @@ mod tests {
             ledger_velocity_seconds: 5.0,
             entries: vec![],
             overall_status: RiskLevel::Ok,
+            archival_recommendations: Vec::new(),
         };
 
         let json_str = render_json(&report).unwrap();

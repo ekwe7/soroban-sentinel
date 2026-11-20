@@ -24,6 +24,12 @@ pub enum Commands {
 
     /// Export JSON Schema for IDE autocompletion (VS Code / IntelliJ)
     Schema(SchemaArgs),
+
+    /// Bundle contract and persistent-key TTL extensions into simulated transactions
+    Bundle(BundleArgs),
+
+    /// Scan contracts once from a TOML manifest
+    Check(CheckArgs),
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -41,7 +47,7 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results: "text" (colorized ASCII table) or "json" (machine-readable)
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), or "sarif" (GitHub Code Scanning)
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
@@ -102,6 +108,61 @@ pub struct SchemaArgs {
     pub manifest: String,
 }
 
+/// Command-line arguments for the `sentinel bundle` command.
+#[derive(Args, Debug, Clone)]
+pub struct BundleArgs {
+    /// Contract addresses to include (can be specified multiple times)
+    #[arg(long = "contract", value_name = "CONTRACT_ID")]
+    pub contracts: Vec<String>,
+
+    /// Persistent storage key symbol applied to each contract
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub keys: Vec<String>,
+
+    /// Persistent storage key encoded as base64 ScVal XDR
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// JSON bundle manifest path
+    #[arg(long, value_name = "PATH")]
+    pub manifest: Option<std::path::PathBuf>,
+
+    /// Source Stellar account that will sign the transaction
+    #[arg(long, value_name = "G...")]
+    pub source_account: String,
+
+    /// Ledger TTL extension length
+    #[arg(long, value_name = "LEDGERS")]
+    pub extend_by: u32,
+
+    /// Base transaction fee in stroops
+    #[arg(long, default_value_t = 100, value_name = "STROOPS")]
+    pub base_fee: u32,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+}
+
+/// Command-line arguments for a one-shot manifest check.
+#[derive(Args, Debug)]
+#[command(
+    after_help = "Exit codes: 0 OK, 1 warning, 2 critical or archived, 10 invalid input, 11 RPC failure. Any RPC failure takes precedence over risk results."
+)]
+pub struct CheckArgs {
+    /// Path to the fleet manifest
+    #[arg(long, default_value = "sentinel.toml", value_name = "PATH")]
+    pub config: std::path::PathBuf,
+
+    /// Report format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,7 +193,7 @@ mod tests {
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
             }
-            Commands::LintManifest(_) | Commands::Schema(_) => {}
+            _ => panic!("expected scan command"),
         }
     }
 
@@ -193,7 +254,7 @@ mod tests {
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
             }
-            Commands::LintManifest(_) | Commands::Schema(_) => {}
+            _ => panic!("expected scan command"),
         }
     }
 }

@@ -115,6 +115,33 @@ To operate soundly without making unsupported protocol assumptions:
 
 ## 5. Usage Guide & Output Examples
 
+### Check a fleet from a manifest
+
+Copy `sentinel.example.toml` to `sentinel.toml` and replace the sample contract IDs
+with your own. Run a single check in manifest order.
+
+```bash
+sentinel check --config sentinel.toml
+sentinel check --config sentinel.toml --format json
+```
+
+The optional `[defaults]` table sets the network, public RPC URL, and warning
+and critical thresholds in ledgers. Each `[[contracts]]` table requires an
+`id` and can specify a `name`, `keys`, `key_xdr`, and either threshold.
+`SOROBAN_RPC_URL` overrides the manifest endpoint. Set credentials in the
+environment. The command validates the entire manifest before querying the
+network and accepts up to 100 contracts in a file of up to 256 KiB.
+
+Text shows each contract and an overall summary. JSON contains an ordered
+`contracts` array and a `summary` object with counts by outcome. Every contract
+result contains `id`, `name`, `status`, `report`, and `error` fields. Unavailable
+values are null.
+
+The command continues after an individual RPC failure. Any RPC failure takes
+precedence and exits 11. Otherwise the worst contract result determines the
+exit code (0 for OK, 1 for warning, 2 for critical or archived). Invalid input
+exits 10 before any RPC requests.
+
 ### Quickstart: Building from Source
 ```bash
 # Clone and build release binary
@@ -189,6 +216,42 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --ledger-seconds 5.8
 ```
+
+### Bundling TTL Extensions
+Create unsigned `ExtendFootprintTTL` transaction envelopes for multiple contracts.
+Each transaction contains a deduplicated read-only footprint capped at 40 entries,
+is simulated against Soroban RPC, and reports its fee plus the combined fee:
+
+```bash
+sentinel bundle \
+  --contract CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --contract <ANOTHER_CONTRACT_ID> \
+  --key ADMIN \
+  --key-xdr <BASE64_SCVAL_XDR> \
+  --source-account <SOURCE_ACCOUNT_G...> \
+  --extend-by 100000 \
+  --network testnet
+```
+
+The source account must exist on the selected network. `--extend-by` is required;
+`--base-fee` defaults to 100 stroops per transaction and can be overridden.
+Repeated `--key` and `--key-xdr` values are applied to each command-line contract.
+Alternatively, `--manifest contracts.json` accepts JSON in this form:
+
+```json
+{
+  "contracts": [
+    {
+      "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      "keys": ["ADMIN"],
+      "key_xdr": ["<BASE64_SCVAL_XDR>"]
+    }
+  ]
+}
+```
+
+Bundling does not sign or submit transactions. Review and sign the returned XDR
+with a separate trusted wallet before submission.
 
 *Actual Terminal Output:*
 ```text
@@ -281,4 +344,3 @@ Please read our [Contribution Plan](docs/OPEN_SOURCE_CONTRIBUTION_PLAN.md) and r
 ## 8. License
 
 `soroban-sentinel` is licensed under the [MIT License](LICENSE).
-

@@ -1,9 +1,15 @@
 //! Driven adapters connecting sentinel-core to external technologies (XDR, RPC, Network).
 
+pub mod auth;
+pub mod failover_rpc;
 pub mod key_expr;
 pub mod soroban_rpc;
 pub mod xdr_keys;
 
+pub use auth::{
+    footprint_to_xdr_base64, parse_ledger_footprint, read_only_footprint, split_footprint_keys,
+};
+pub use failover_rpc::{EndpointHealthSnapshot, FailoverConfig, MultiRpcFailoverReader};
 pub use key_expr::{parse_key_expr, MAX_KEY_EXPR_DEPTH, MAX_KEY_EXPR_LEN};
 pub use soroban_rpc::{
     validate_rpc_url, RetryPolicy, SorobanRpcClient, DEFAULT_BASE_RETRY_DELAY_MS,

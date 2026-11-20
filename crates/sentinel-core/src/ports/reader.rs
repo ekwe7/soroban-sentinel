@@ -5,6 +5,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SentinelResult;
 
+/// Current health classification for a ledger reader endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReaderHealth {
+    /// Responding within the configured latency threshold.
+    Healthy,
+    /// Responding slowly or recovering from a transient failure.
+    Degraded,
+    /// Failing requests and currently excluded while healthy endpoints exist.
+    Unhealthy,
+}
+
 /// Snapshot metadata of the latest ledger closed on the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatestLedgerInfo {

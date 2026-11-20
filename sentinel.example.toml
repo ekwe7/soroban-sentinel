@@ -1,0 +1,17 @@
+[defaults]
+network = "testnet"
+warning_threshold = 120960
+critical_threshold = 34560
+# Set SOROBAN_RPC_URL outside this file for endpoints with credentials.
+
+[[contracts]]
+id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+name = "Token"
+keys = ["COUNTER"]
+key_xdr = []
+
+[[contracts]]
+id = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+name = "Pool"
+warning_threshold = 86400
+critical_threshold = 17280

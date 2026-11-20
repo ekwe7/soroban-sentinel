@@ -1,5 +1,7 @@
 //! Use case orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use stellar_xdr::curr::{ReadXdr, WriteXdr};
 
@@ -8,9 +10,13 @@ use crate::adapters::{
     derive_persistent_symbol_key, derive_persistent_xdr_key, extract_wasm_hash_from_instance_entry,
     parse_contract_id, parse_key_expr, safe_xdr_limits,
 };
+use crate::domain::cold_storage::{
+    recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
+};
 use crate::domain::{
     calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
-    evaluate_risk, Durability, EntryType, RiskLevel, ThresholdConfig, TARGET_LEDGER_CLOSE_SECONDS,
+    evaluate_risk, Durability, EntryType, RiskLevel, StorageEntry, ThresholdConfig,
+    TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -169,6 +175,9 @@ pub struct TTLReport {
     pub entries: Vec<StorageEntryReport>,
     /// Aggregate overall risk status for the contract.
     pub overall_status: RiskLevel,
+    /// Advisory projections for eligible persistent entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archival_recommendations: Vec<ArchivalRecommendation>,
 }
 
 impl TTLReport {
@@ -253,12 +262,27 @@ fn compute_byte_size(entry_xdr_base64: &str) -> usize {
 /// Application orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 pub struct ScanContractUseCase<R: LedgerReader> {
     reader: R,
+    archival: Option<(ArchivalPolicy, HashMap<String, ExtensionHistory>)>,
 }
 
 impl<R: LedgerReader> ScanContractUseCase<R> {
     /// Creates a new `ScanContractUseCase` with the given reader.
     pub fn new(reader: R) -> Self {
-        Self { reader }
+        Self {
+            reader,
+            archival: None,
+        }
+    }
+
+    /// Enable advisory analysis with complete histories keyed by canonical ledger-key XDR.
+    /// Histories and fee estimates must belong to the network being scanned.
+    pub fn with_archival_analysis(
+        mut self,
+        policy: ArchivalPolicy,
+        histories: HashMap<String, ExtensionHistory>,
+    ) -> Self {
+        self.archival = Some((policy, histories));
+        self
     }
 
     /// Returns a reference to the underlying reader.
@@ -416,6 +440,9 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             }
         }
 
+        let mut archival_recommendations = Vec::new();
+        let mut evaluated_keys = HashSet::new();
+
         // 6. Process Persistent entries
         for (ident, key_xdr) in persistent_descriptors {
             let found_entry = raw_entries.iter().find(|e| e.key_xdr_base64 == key_xdr);
@@ -428,6 +455,28 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     estimate_remaining_seconds_with_velocity(remaining_ledgers, ledger_velocity);
                 let remaining_days = estimate_remaining_days(remaining_seconds);
                 let status = evaluate_risk(remaining_ledgers, &request.threshold_config);
+
+                if let Some((policy, histories)) = &self.archival {
+                    if let Some(history) = histories.get(&key_xdr) {
+                        if key_xdr != instance_key_xdr && evaluated_keys.insert(key_xdr) {
+                            let profile = StorageEntry::new(
+                                &ident,
+                                EntryType::PersistentData,
+                                Durability::Persistent,
+                                byte_size,
+                                live_until,
+                                entry.last_modified_ledger_seq,
+                            );
+                            archival_recommendations.extend(recommend_archival(
+                                &profile,
+                                *history,
+                                policy,
+                                latest_ledger,
+                                ledger_velocity,
+                            ));
+                        }
+                    }
+                }
 
                 reports.push(StorageEntryReport::new(
                     ident,
@@ -465,6 +514,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             ledger_velocity_seconds: ledger_velocity,
             entries: reports,
             overall_status,
+            archival_recommendations,
         })
     }
 }

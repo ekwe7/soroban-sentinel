@@ -11,7 +11,7 @@ use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{ScanContractUseCase, ScanRequest};
 
 use crate::args::ScanArgs;
-use crate::formatters::{render_json_with_diff, render_text_with_diff};
+use crate::formatters::{render_json_with_diff, render_sarif, render_text_with_diff};
 
 /// Exit code: All evaluated storage entries have status OK.
 pub const EXIT_OK: i32 = 0;
@@ -226,9 +226,10 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
     let output_result = match args.format.to_lowercase().as_str() {
         "text" => Ok(render_text_with_diff(&report, baseline_diff.as_ref())),
         "json" => render_json_with_diff(&report, baseline_diff.clone()),
+        "sarif" => render_sarif(&report),
         other => {
             eprintln!(
-                "Error: Unsupported format '{}'. Supported formats: text, json",
+                "Error: Unsupported format '{}'. Supported formats: text, json, sarif",
                 other
             );
             return EXIT_INVALID_ARGS;
