@@ -23,7 +23,14 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
-    Scan(ScanArgs),
+    Scan(Box<ScanArgs>),
+
+    /// Lint a manifest file and export JSON Schema for IDE autocompletion
+    LintManifest(LintManifestArgs),
+
+    /// Export JSON Schema for IDE autocompletion (VS Code / IntelliJ)
+    Schema(SchemaArgs),
+
     /// Compare the cost of extending contract storage TTL across duration tiers
     CostMatrix(CostMatrixArgs),
 
@@ -96,6 +103,22 @@ pub struct ScanArgs {
     /// Return exit code 2 if any entry regressed in risk status or was removed compared to baseline
     #[arg(long = "fail-on-regression")]
     pub fail_on_regression: bool,
+}
+
+/// Command-line arguments for the `sentinel lint-manifest` command.
+#[derive(Args, Debug, Clone)]
+pub struct LintManifestArgs {
+    /// Path to the manifest JSON file to validate and generate schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
+}
+
+/// Command-line arguments for the `sentinel schema` command.
+#[derive(Args, Debug, Clone)]
+pub struct SchemaArgs {
+    /// Path to the manifest JSON file to generate JSON Schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
 }
 
 /// Command-line arguments for the cost-matrix command.

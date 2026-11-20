@@ -24,6 +24,7 @@ serde_json.workspace = true
 comfy-table.workspace = true
 csv.workspace = true
 thiserror.workspace = true
+schemars = "0.8"
 reqwest.workspace = true
 stellar-xdr.workspace = true
 stellar-strkey.workspace = true
