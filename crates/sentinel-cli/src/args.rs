@@ -141,6 +141,88 @@ pub struct CheckArgs {
     pub format: String,
 }
 
+/// Command-line arguments for the `sentinel watch` command.
+///
+/// Supports email and webhook notification configuration for risk events.
+#[derive(Args, Debug, Clone)]
+pub struct WatchArgs {
+    /// Target Soroban smart contract address (C... Strkey format)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Custom Soroban RPC endpoint URL (overrides default network endpoint)
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Target Stellar network: "testnet", "mainnet", "futurenet", or "local"
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
+    #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
+    pub threshold: u32,
+
+    /// Critical threshold in ledgers below which entries trigger CRITICAL status (defaults to 34,560 ledgers ≈ 2 days, or threshold / 3 if threshold <= 34,560)
+    #[arg(long, value_name = "LEDGERS")]
+    pub critical_threshold: Option<u32>,
+
+    /// Custom RPC request timeout in seconds (1–120, defaults to 10)
+    #[arg(long = "rpc-timeout", value_name = "SECS")]
+    pub rpc_timeout: Option<u64>,
+
+    /// Maximum RPC retry attempts for transient errors (0–10, defaults to 3)
+    #[arg(long = "rpc-max-retries", value_name = "N")]
+    pub rpc_max_retries: Option<u32>,
+
+    /// Override ledger close velocity in seconds per ledger (1.0–60.0)
+    #[arg(long = "ledger-seconds", value_name = "SECS")]
+    pub ledger_seconds: Option<f64>,
+
+    /// Path to a previous JSON scan report baseline file for comparison
+    #[arg(long = "baseline", value_name = "PATH")]
+    pub baseline: Option<String>,
+
+    /// Return exit code 2 if any entry regressed in risk status or was removed compared to baseline
+    #[arg(long = "fail-on-regression")]
+    pub fail_on_regression: bool,
+
+    /// SMTP server address for email notifications
+    #[arg(long = "smtp-server", value_name = "HOST", env = "SENTINEL_SMTP_SERVER")]
+    pub smtp_server: Option<String>,
+
+    /// SMTP port for email notifications (default: 587)
+    #[arg(long = "smtp-port", default_value_t = 587, value_name = "PORT")]
+    pub smtp_port: u16,
+
+    /// SMTP username for email notifications
+    #[arg(long = "smtp-username", value_name = "USER", env = "SENTINEL_SMTP_USERNAME")]
+    pub smtp_username: Option<String>,
+
+    /// SMTP password for email notifications
+    #[arg(long = "smtp-password", value_name = "PASS", env = "SENTINEL_SMTP_PASSWORD")]
+    pub smtp_password: Option<String>,
+
+    /// Recipient email addresses (specify multiple times for multiple recipients)
+    #[arg(long = "smtp-recipient", value_name = "EMAIL", env = "SENTINEL_SMTP_RECIPIENT")]
+    pub smtp_recipients: Vec<String>,
+
+    /// Use STARTTLS for SMTP (connect without TLS then upgrade)
+    #[arg(long = "smtp-starttls")]
+    pub smtp_starttls: bool,
+
+    /// Webhook secret for HMAC-SHA256 signature computation
+    #[arg(long = "webhook-secret", value_name = "SECRET", env = "SENTINEL_WEBHOOK_SECRET")]
+    pub webhook_secret: Option<String>,
+
+    /// Webhook token for bearer token authorization
+    #[arg(long = "webhook-token", value_name = "TOKEN", env = "SENTINEL_WEBHOOK_TOKEN")]
+    pub webhook_token: Option<String>,
+
+    /// Webhook URL for alert notifications
+    #[arg(long = "webhook-url", value_name = "URL", env = "SENTINEL_WEBHOOK_URL")]
+    pub webhook_url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
