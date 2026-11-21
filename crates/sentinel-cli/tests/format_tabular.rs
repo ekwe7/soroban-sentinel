@@ -1,7 +1,12 @@
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "parquet")]
+use arrow_array::{Array, Int64Array, StringArray, TimestampMicrosecondArray};
 use assert_cmd::Command;
+#[cfg(feature = "parquet")]
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
 use predicates::prelude::*;
 use stellar_xdr::curr::{
     ContractDataDurability, ContractDataEntry, ContractExecutable, ExtensionPoint, Hash,
@@ -91,6 +96,40 @@ fn unique_path(prefix: &str) -> std::path::PathBuf {
         std::process::id(),
         nanos
     ))
+}
+
+#[cfg(feature = "parquet")]
+fn unique_parquet_path(prefix: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "sentinel-{}-{}-{}.parquet",
+        prefix,
+        std::process::id(),
+        nanos
+    ))
+}
+
+#[cfg(feature = "parquet")]
+fn parquet_batches(bytes: &[u8]) -> Vec<arrow_array::RecordBatch> {
+    // The in-memory Parquet reader requires a `ChunkReader`; use a temporary
+    // file so no extra test dependency is needed.
+    let path = unique_path("parquet-read");
+    fs::write(&path, bytes).unwrap();
+    let builder = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&path).unwrap()).unwrap();
+    assert_eq!(builder.schema().fields().len(), EXPECTED_HEADER.len());
+    for (field, expected) in builder.schema().fields().iter().zip(EXPECTED_HEADER.iter()) {
+        assert_eq!(field.name(), expected);
+    }
+    let batches: Vec<_> = builder
+        .build()
+        .unwrap()
+        .map(|batch| batch.unwrap())
+        .collect();
+    fs::remove_file(&path).unwrap();
+    batches
 }
 
 #[tokio::test]
@@ -317,12 +356,260 @@ fn test_csv_rejects_unwritable_output_with_exit_code_10() {
 }
 
 #[test]
-fn test_help_advertises_csv_and_output() {
+fn test_help_advertises_csv_parquet_and_output() {
     Command::cargo_bin("sentinel")
         .unwrap()
         .args(["scan", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("csv"))
+        .stdout(predicate::str::contains("parquet"))
         .stdout(predicate::str::contains("--output <PATH>"));
+}
+
+#[test]
+fn test_parquet_rejects_baseline_with_exit_code_10() {
+    let contract_strkey = stellar_strkey::Contract([3u8; 32]).to_string();
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            "http://127.0.0.1:1",
+            "--format",
+            "parquet",
+            "--baseline",
+            "baseline.json",
+        ])
+        .assert()
+        .code(10);
+}
+
+#[cfg(not(feature = "parquet"))]
+#[test]
+fn test_parquet_without_feature_fails_with_exit_code_10() {
+    let contract_strkey = stellar_strkey::Contract([5u8; 32]).to_string();
+
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            "http://127.0.0.1:1",
+            "--format",
+            "parquet",
+        ])
+        .assert()
+        .code(10)
+        .stderr(predicate::str::contains(
+            "this binary was built without Parquet support; rebuild with --features parquet",
+        ));
+}
+
+#[cfg(feature = "parquet")]
+#[tokio::test]
+async fn test_parquet_stdout_matches_csv_row_values() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [7u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let instance_key = derive_contract_instance_key(&contract_id).unwrap();
+    let mock_instance_key = instance_key.clone();
+    let instance_xdr = make_instance_xdr(contract_id);
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["method"].as_str().unwrap() {
+                "getLatestLedger" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "sequence": 5_400_000, "protocolVersion": 22 }
+                })),
+                "getLedgerEntries" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "latestLedger": 5_400_000,
+                        "entries": [{
+                            "key": mock_instance_key,
+                            "xdr": instance_xdr,
+                            "liveUntilLedgerSeq": 5_600_000,
+                            "lastModifiedLedgerSeq": 5_390_000
+                        }]
+                    }
+                })),
+                "getLedgers" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "ledgers": [] }
+                })),
+                other => panic!("Unexpected method: {}", other),
+            }
+        })
+        .mount(&mock_server)
+        .await;
+
+    let mut command = Command::cargo_bin("sentinel").unwrap();
+    let parquet_output = command
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            &mock_server.uri(),
+            "--format",
+            "parquet",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+
+    assert!(parquet_output.starts_with(b"PAR1"));
+    assert!(parquet_output.ends_with(b"PAR1"));
+
+    let batches = parquet_batches(&parquet_output);
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 9);
+
+    let timestamp = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .unwrap();
+    assert!(!timestamp.is_null(0));
+    assert!(timestamp.value(0) > 0);
+    assert_eq!(timestamp.timezone(), Some("UTC"));
+
+    let text = |index| -> String {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string()
+    };
+    assert_eq!(text(1), "testnet");
+    assert_eq!(text(2), contract_strkey);
+    assert_eq!(text(3), instance_key);
+    assert_eq!(text(4), "instance");
+    assert_eq!(text(8), "ok");
+
+    let number = |index| -> i64 {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0)
+    };
+    assert!(number(5) > 0);
+    assert_eq!(number(6), 5_600_000);
+    assert_eq!(number(7), 200_000);
+
+    // The same scan through the CSV formatter must yield the same values.
+    let csv_output = Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            &mock_server.uri(),
+            "--format",
+            "csv",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let (_, records) = parse_csv(&csv_output);
+    assert_eq!(records.len(), 1);
+    let row = &records[0];
+    assert_eq!(row[1], text(1));
+    assert_eq!(row[2], text(2));
+    assert_eq!(row[3], text(3));
+    assert_eq!(row[4], text(4));
+    assert_eq!(row[5].parse::<i64>().unwrap(), number(5));
+    assert_eq!(row[6].parse::<i64>().unwrap(), number(6));
+    assert_eq!(row[7].parse::<i64>().unwrap(), number(7));
+    assert_eq!(row[8], text(8));
+    assert_iso8601_utc(&row[0]);
+}
+
+#[cfg(feature = "parquet")]
+#[tokio::test]
+async fn test_parquet_output_file_keeps_stdout_empty() {
+    let mock_server = MockServer::start().await;
+    let contract_id = [11u8; 32];
+    let contract_strkey = stellar_strkey::Contract(contract_id).to_string();
+    let instance_key = derive_contract_instance_key(&contract_id).unwrap();
+    let mock_instance_key = instance_key.clone();
+    let instance_xdr = make_instance_xdr(contract_id);
+    let output_path = unique_parquet_path("parquet-file");
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            match body["method"].as_str().unwrap() {
+                "getLatestLedger" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "sequence": 5_400_000, "protocolVersion": 22 }
+                })),
+                "getLedgerEntries" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "latestLedger": 5_400_000,
+                        "entries": [{
+                            "key": mock_instance_key,
+                            "xdr": instance_xdr,
+                            "liveUntilLedgerSeq": 5_600_000,
+                            "lastModifiedLedgerSeq": 5_390_000
+                        }]
+                    }
+                })),
+                "getLedgers" => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "ledgers": [] }
+                })),
+                other => panic!("Unexpected method: {}", other),
+            }
+        })
+        .mount(&mock_server)
+        .await;
+
+    let stdout = Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "scan",
+            &contract_strkey,
+            "--rpc-url",
+            &mock_server.uri(),
+            "--format",
+            "parquet",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert!(stdout.is_empty(), "--output must keep stdout empty");
+
+    let bytes = fs::read(&output_path).unwrap();
+    let batches = parquet_batches(&bytes);
+    assert_eq!(batches[0].num_rows(), 1);
+    fs::remove_file(&output_path).unwrap();
 }

@@ -19,6 +19,9 @@ path = "src/main.rs"
 # Interactive TUI dashboard. Disabled by default so the normal CLI binary
 # stays free of terminal-UI dependencies.
 tui = ["dep:ratatui", "dep:crossterm"]
+# Parquet export. Disabled by default so the normal CLI binary stays free of
+# Arrow/Parquet dependencies.
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
 
 [dependencies]
 sentinel-core.workspace = true
@@ -28,6 +31,9 @@ serde.workspace = true
 serde_json.workspace = true
 comfy-table.workspace = true
 csv.workspace = true
+parquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 thiserror.workspace = true
 reqwest.workspace = true
 stellar-xdr.workspace = true

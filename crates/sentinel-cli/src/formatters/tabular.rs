@@ -12,16 +12,76 @@ use sentinel_core::{
     SentinelError, SentinelResult, StorageEntryReport, TTLReport,
 };
 
-/// Exact column order required by the CSV export contract.
+/// Exact column order required by the tabular export contract.
 pub const CSV_HEADER: &str = "timestamp,network,contract_id,key_xdr,durability,byte_size,live_until_ledger,remaining_ledgers,status";
+
+/// One row of the shared tabular export, in `CSV_HEADER` column order.
+///
+/// Both the CSV and Parquet formatters build these rows through
+/// [`build_tabular_rows`], so the two exports always carry the same values.
+/// `key_xdr` is `None` when no ledger key XDR can be reconstructed (it is
+/// rendered as an empty CSV field and as a null Parquet value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabularRow {
+    /// UTC timestamp for the whole report, as Unix seconds.
+    pub timestamp_seconds: i64,
+    pub network: String,
+    pub contract_id: String,
+    pub key_xdr: Option<String>,
+    pub durability: &'static str,
+    pub byte_size: i64,
+    pub live_until_ledger: i64,
+    pub remaining_ledgers: i64,
+    pub status: &'static str,
+}
+
+/// Builds the flat rows shared by the CSV and Parquet exporters.
+pub fn build_tabular_rows(report: &TTLReport) -> SentinelResult<Vec<TabularRow>> {
+    let timestamp_seconds = unix_timestamp_now();
+    let contract_id = parse_contract_id(&report.contract_id)?;
+
+    report
+        .entries
+        .iter()
+        .map(|entry| {
+            let key_xdr = key_xdr_for_entry(&contract_id, entry)
+                .unwrap_or_else(|_| entry.key_identifier.clone());
+
+            Ok(TabularRow {
+                timestamp_seconds,
+                network: report.network.clone(),
+                contract_id: report.contract_id.clone(),
+                key_xdr: if key_xdr.is_empty() {
+                    None
+                } else {
+                    Some(key_xdr)
+                },
+                durability: durability_label(entry),
+                byte_size: i64::try_from(entry.byte_size).map_err(|_| {
+                    SentinelError::SerializationError(format!(
+                        "Entry byte size {} exceeds the tabular export limit",
+                        entry.byte_size
+                    ))
+                })?,
+                live_until_ledger: i64::from(entry.live_until_ledger),
+                remaining_ledgers: entry.remaining_ledgers,
+                status: status_label(entry),
+            })
+        })
+        .collect()
+}
 
 /// Renders a scan report as CSV text, including the header row.
 ///
 /// The returned string is terminated by a newline. Callers that print to a
 /// terminal should trim that final newline before adding their own.
 pub fn render_csv(report: &TTLReport) -> SentinelResult<String> {
-    let timestamp = iso8601_utc_now();
-    let contract_id = parse_contract_id(&report.contract_id)?;
+    let rows = build_tabular_rows(report)?;
+    let timestamp = format_epoch_seconds(
+        rows.first()
+            .map(|row| row.timestamp_seconds)
+            .unwrap_or_else(unix_timestamp_now),
+    );
 
     let mut writer = csv::WriterBuilder::new()
         .has_headers(false)
@@ -31,21 +91,18 @@ pub fn render_csv(report: &TTLReport) -> SentinelResult<String> {
         .write_record(CSV_HEADER.split(','))
         .map_err(csv_error)?;
 
-    for entry in &report.entries {
-        let key_xdr =
-            key_xdr_for_entry(&contract_id, entry).unwrap_or_else(|_| entry.key_identifier.clone());
-
+    for row in &rows {
         writer
             .write_record([
                 timestamp.as_str(),
-                report.network.as_str(),
-                report.contract_id.as_str(),
-                key_xdr.as_str(),
-                durability_label(entry),
-                entry.byte_size.to_string().as_str(),
-                entry.live_until_ledger.to_string().as_str(),
-                entry.remaining_ledgers.to_string().as_str(),
-                status_label(entry),
+                row.network.as_str(),
+                row.contract_id.as_str(),
+                row.key_xdr.as_deref().unwrap_or(""),
+                row.durability,
+                row.byte_size.to_string().as_str(),
+                row.live_until_ledger.to_string().as_str(),
+                row.remaining_ledgers.to_string().as_str(),
+                row.status,
             ])
             .map_err(csv_error)?;
     }
@@ -108,12 +165,11 @@ fn key_xdr_for_entry(contract_id: &[u8; 32], entry: &StorageEntryReport) -> Sent
     }
 }
 
-fn iso8601_utc_now() -> String {
-    let seconds = SystemTime::now()
+fn unix_timestamp_now() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
-    format_epoch_seconds(seconds)
+        .as_secs() as i64
 }
 
 /// Formats Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` (UTC, ISO 8601).

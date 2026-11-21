@@ -4,13 +4,16 @@
 pub mod bundle;
 pub mod check;
 pub mod cost_matrix;
+pub mod restore;
 pub mod scan;
+pub mod service;
 #[cfg(feature = "tui")]
 pub mod tui;
 
 pub use bundle::run_bundle;
 pub use check::run_check;
 pub use cost_matrix::run_cost_matrix;
+pub use restore::run_restore;
 
 pub use scan::{
     resolve_rpc_url,
@@ -21,3 +24,4 @@ pub use scan::{
     EXIT_RPC_FAILURE,
     EXIT_WARN,
 };
+pub use service::run_install_service;

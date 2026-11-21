@@ -94,6 +94,14 @@ Mock tests run against an in-process HTTP mock server using the `wiremock` crate
 | `sentinel scan CA3D... --threshold 99999999` | All entries evaluated as `WARN` | `1` (Warning State) |
 | `sentinel scan <NON_EXISTENT_CONTRACT>` | Warning: `Contract instance not found` | `2` (Critical / Missing) |
 
+#### Test Suite: State Restoration (`tests/cli_restore.rs`)
+
+| Input Command | Expected Output / Behavior | Expected Exit Code |
+| :--- | :--- | :--- |
+| `sentinel restore CA3D... --key ADMIN` (archived) | JSON/text plan with `RestoreFootprintOp`, simulated resource fee, unsigned XDR, and `stellar contract restore --build-only` command | `0` |
+| `sentinel restore CA3D... --key ADMIN` (still live) | Error: `No archived keys found for the requested targets; nothing to restore` | `10` (Bad Input) |
+| `sentinel restore CA3D... --key-expr <INVALID>` | Invalid key expression reported before RPC | `10` (Bad Input) |
+
 ---
 
 ### 2.4 Future Watch Mode: Event Handler Testing Strategy
