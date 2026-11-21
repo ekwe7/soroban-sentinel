@@ -11,6 +11,7 @@ pub mod planner;
 pub mod restore;
 pub mod risk;
 pub mod scenario;
+pub mod storage_audit;
 pub mod ttl;
 
 pub use bundle::{
@@ -34,6 +35,10 @@ pub use risk::{
 pub use scenario::{
     evaluate_protocol_scenario, NetworkRentParameters, ProtocolScenarioReport, ScenarioEntry,
     ScenarioEntryImpact, ScenarioError,
+};
+pub use storage_audit::{
+    analyze_storage_entry, estimate_annual_rent_savings, AuditEntry, AuditFinding,
+    AuditFindingKind, StorageAuditReport, MAX_SOROBAN_ENTRY_BYTES,
 };
 pub use ttl::{
     calculate_remaining_ledgers, estimate_horizon_days, estimate_horizon_days_with_velocity,

@@ -10,7 +10,7 @@ pub mod telemetry;
 #[cfg(feature = "tui")]
 pub mod tui;
 
-pub use args::{BundleArgs, Cli, Commands, RestoreArgs, ScanArgs};
+pub use args::{AuditKeysArgs, BundleArgs, Cli, Commands, RestoreArgs, ScanArgs};
 pub use commands::{
     resolve_rpc_url, run_bundle, run_restore, run_scan, EXIT_CRITICAL_OR_ARCHIVED,
     EXIT_INVALID_ARGS, EXIT_OK, EXIT_RPC_FAILURE, EXIT_WARN,

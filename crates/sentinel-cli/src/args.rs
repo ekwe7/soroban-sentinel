@@ -35,6 +35,9 @@ pub enum Commands {
 
     /// Scan contracts once from a TOML manifest
     Check(CheckArgs),
+
+    /// Audit contract storage placement, entry sizes, and cost-saving opportunities
+    AuditKeys(AuditKeysArgs),
 }
 
 /// Command-line arguments for the `sentinel scan` command.
@@ -238,6 +241,54 @@ pub struct CheckArgs {
     /// Report format
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
+}
+
+/// Command-line arguments for the `sentinel audit-keys` command.
+#[derive(Args, Debug, Clone)]
+pub struct AuditKeysArgs {
+    /// Target Soroban smart contract address (C... Strkey format)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Custom Soroban RPC endpoint URL (overrides the network preset)
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Persistent storage key symbols to inspect
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Persistent storage key encoded as base64 ScVal XDR
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Persistent storage key typed expression
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+
+    /// Temporary storage key symbols to inspect
+    #[arg(long = "temp-key", value_name = "SYMBOL")]
+    pub temp_key: Vec<String>,
+
+    /// Temporary storage key typed expression
+    #[arg(long = "temp-key-expr", value_name = "EXPR")]
+    pub temp_key_expr: Vec<String>,
+
+    /// Custom RPC request timeout in seconds
+    #[arg(long = "rpc-timeout", value_name = "SECS")]
+    pub rpc_timeout: Option<u64>,
+
+    /// Maximum RPC retry attempts
+    #[arg(long = "rpc-max-retries", value_name = "N")]
+    pub rpc_max_retries: Option<u32>,
 }
 
 #[cfg(test)]

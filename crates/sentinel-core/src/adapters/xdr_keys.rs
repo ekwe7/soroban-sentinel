@@ -133,6 +133,30 @@ pub fn derive_persistent_xdr_key(
     derive_persistent_key_from_scval(contract_id, key_scval)
 }
 
+/// Derives the base64-encoded `LedgerKey` XDR for a temporary storage entry using an `ScVal`.
+pub fn derive_temporary_key_from_scval(
+    contract_id: &[u8; 32],
+    key: ScVal,
+) -> SentinelResult<String> {
+    let ledger_key = LedgerKey::ContractData(LedgerKeyContractData {
+        contract: ScAddress::Contract(Hash(*contract_id)),
+        key,
+        durability: ContractDataDurability::Temporary,
+    });
+
+    ledger_key.to_xdr_base64(Limits::none()).map_err(|e| {
+        SentinelError::SerializationError(format!("Failed to encode temporary key: {}", e))
+    })
+}
+
+/// Derives the base64-encoded `LedgerKey` XDR for a temporary storage entry using a symbol string.
+pub fn derive_temporary_symbol_key(contract_id: &[u8; 32], symbol: &str) -> SentinelResult<String> {
+    let sc_symbol = ScSymbol(symbol.try_into().map_err(|e| {
+        SentinelError::InvalidXdrKey(format!("Invalid symbol '{}': {}", symbol, e))
+    })?);
+    derive_temporary_key_from_scval(contract_id, ScVal::Symbol(sc_symbol))
+}
+
 /// Validates and parses a Stellar strkey address (`G...` account or `C...` contract) into an `ScAddress`.
 ///
 /// Returns typed `SentinelError::InvalidContractAddress` diagnostics on malformed or unsupported address types.
