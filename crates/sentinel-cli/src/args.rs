@@ -24,6 +24,9 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(ScanArgs),
+    /// Benchmark Soroban RPC endpoint performance (latency, throughput, percentiles)
+    Benchmark(BenchmarkArgs),
+
     /// Compare the cost of extending contract storage TTL across duration tiers
     CostMatrix(CostMatrixArgs),
 
@@ -103,6 +106,26 @@ pub struct ScanArgs {
     /// Launch the interactive TUI dashboard (requires the `tui` Cargo feature and a TTY)
     #[arg(long)]
     pub tui: bool,
+}
+
+/// Command-line arguments for the `sentinel benchmark-rpc` command.
+#[derive(Args, Debug, Clone)]
+pub struct BenchmarkArgs {
+    /// Required RPC endpoint URL (e.g. https://soroban-testnet.stellar.org)
+    #[arg(value_name = "URL")]
+    pub rpc_url: String,
+
+    /// Number of concurrent requests to issue during benchmark (default: 1)
+    #[arg(long = "concurrency", default_value = "1", value_name = "N")]
+    pub concurrency: usize,
+
+    /// Benchmark duration in seconds (default: 30s)
+    #[arg(long = "duration-secs", default_value = "30", value_name = "SECS")]
+    pub duration_secs: u64,
+
+    /// Output format for benchmark results: "text" (human-readable table) or "json" (machine-readable)
+    #[arg(long = "format", default_value = "text", value_name = "FORMAT")]
+    pub format: String,
 }
 
 /// Command-line arguments for the cost-matrix command.
