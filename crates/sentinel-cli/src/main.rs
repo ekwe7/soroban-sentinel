@@ -37,6 +37,11 @@ async fn main() {
         Commands::Bundle(args) => commands::run_bundle(args).await,
         Commands::InstallService(args) => commands::run_install_service(args),
         Commands::Restore(args) => commands::run_restore(args).await,
+        Commands::Init(args) => commands::run_init(args),
+        Commands::KeyEncode(args) => commands::run_key_encode(args),
+        Commands::KeyDecode(args) => commands::run_key_decode(args),
+        Commands::DiffReports(args) => commands::run_diff_reports(args),
+        Commands::Forecast(args) => commands::run_forecast(args).await,
     };
 
     // Flush buffered spans/metrics before exiting, since `process::exit`

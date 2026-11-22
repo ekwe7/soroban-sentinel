@@ -93,6 +93,7 @@ The following table distinguishes between MVP release features and post-MVP road
 | **CLI** | Flat Parquet Export (`--format parquet`, `--output`) | N/A | **Available (optional `parquet` feature)** | Issue #55 |
 | **CLI (MVP)** | Explicit Persistent Key Verification (`--key`, `--key-xdr`) | Protocol 20+ | **Completed (v0.1.0)** | [MVP Scope](docs/MVP_SCOPE.md#1-mvp-feature-set-v010) |
 | **CLI** | Interactive TUI Dashboard (`sentinel scan --tui`) | N/A | **Available (optional `tui` feature)** | Issue #42 |
+| **CLI** | Offline Snapshot Replay (`sentinel scan --snapshot <PATH>`) | N/A | **Available** | Issue #70 |
 | **CLI** | Markdown Output (`--format markdown`) | N/A | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Rent Simulation (`sentinel forecast <ID>`) | Protocol 20+ | **Planned (Sprint 3)** | [Roadmap](docs/IMPLEMENTATION_ROADMAP.md#phase-3) |
 | **CLI** | Archived State Restoration (`sentinel restore <ID>`) | CAP-0046 | **Available** | Issue #40 |
@@ -191,6 +192,28 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 | `addr:` | Account (`G...`) or Contract (`C...`) Strkey address | `addr:GABC...`, `addr:CDLZ...` |
 | `bytes:` | Hex-encoded raw byte array | `bytes:deadbeef`, `bytes:0x1234` |
 | `vec[...]` | Nested composite vector (up to 16 nesting levels) | `vec[sym:Allowance, addr:G..., addr:C...]` |
+
+### Offline Snapshot Replay (`--snapshot`)
+Use a deterministic `.sentinel-snap` archive to debug TTL calculations, regression
+diffing, and risk evaluation without RPC access:
+
+```bash
+# Replay a previously recorded snapshot
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --network testnet \
+  --snapshot state.sentinel-snap \
+  --format json
+```
+
+Snapshots store the network passphrase, protocol version, latest ledger,
+ledger-close velocity, and every queried ledger entry. Replay validates the
+passphrase and format version before use, returns entries in deterministic order,
+and produces the same `TTLReport` as the live scan that recorded it. Use the same
+`--network` that produced the snapshot; `--snapshot` cannot be combined with
+`--rpc-url`, `--rpc-timeout`, `--rpc-max-retries`, `--baseline`, `--format csv`,
+or `--format parquet`. Unset `SOROBAN_RPC_URL` when replaying offline because an
+RPC URL from the environment is treated as a conflicting flag. Invalid or
+corrupt snapshots exit with code 10.
 
 ### Baseline Scan Comparison & Regression Gating (`--baseline`)
 Track storage decay and detect changes between inspection intervals by comparing a scan against a previous JSON report:

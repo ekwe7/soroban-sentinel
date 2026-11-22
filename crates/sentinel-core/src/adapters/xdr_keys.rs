@@ -8,7 +8,11 @@ use stellar_xdr::curr::{
     ScMap, ScMapEntry, ScSymbol, ScVal, ScVec, Uint256, WriteXdr,
 };
 
-use crate::domain::{InstanceStorageBreakdown, SacAssetInfo};
+use super::key_expr::parse_key_expr;
+use crate::domain::{
+    parse_key_pattern, InstanceStorageBreakdown, KeyPattern, KeyPatternCandidateInput,
+    KeyPatternToken, SacAssetInfo, MAX_KEY_PATTERN_CANDIDATES,
+};
 use crate::error::{SentinelError, SentinelResult};
 
 /// Parses a Stellar Strkey contract address (e.g., `CA3D...`) into a 32-byte contract ID.
@@ -494,6 +498,165 @@ pub fn extract_sac_asset_info(entry_xdr_base64: &str) -> SentinelResult<Option<S
         Err(SentinelError::InvalidXdrKey(
             "Decoded ledger entry is not ContractData".to_string(),
         ))
+    }
+}
+
+/// Bounded key-pattern matcher. Wildcards expand only from caller-provided known inputs;
+/// this never performs on-chain key enumeration.
+#[derive(Debug, Clone)]
+pub struct KeyPatternMatcher;
+
+impl KeyPatternMatcher {
+    /// Expands a key pattern into deterministic `LedgerKey` candidates.
+    ///
+    /// Composite patterns generate the full cross-product of their token
+    /// candidates (addresses × symbol suffixes). Results are sorted by encoded
+    /// XDR bytes, deduplicated, and capped at [`MAX_KEY_PATTERN_CANDIDATES`].
+    pub fn expand(
+        contract_id: &[u8; 32],
+        pattern: &str,
+        known: &KeyPatternCandidateInput,
+    ) -> SentinelResult<Vec<LedgerKey>> {
+        let parsed = parse_key_pattern(pattern).map_err(|(position, message)| {
+            SentinelError::InvalidXdrKey(format!(
+                "Key pattern syntax error at position {position}: {message}"
+            ))
+        })?;
+
+        let values = match parsed {
+            KeyPattern::Single(token) => Self::expand_token(&token, known)?,
+            KeyPattern::Composite(tokens) => {
+                Self::expand_token(&KeyPatternToken::Composite(tokens), known)?
+            }
+        };
+
+        let mut ledger_keys = Vec::with_capacity(values.len().min(MAX_KEY_PATTERN_CANDIDATES));
+        for key in values {
+            let ledger_key = LedgerKey::ContractData(LedgerKeyContractData {
+                contract: ScAddress::Contract(Hash(*contract_id)),
+                key,
+                durability: ContractDataDurability::Persistent,
+            });
+            let encoded = ledger_key
+                .to_xdr_base64(safe_xdr_limits())
+                .map_err(|error| {
+                    SentinelError::SerializationError(format!(
+                        "Failed to encode key pattern candidate: {error}"
+                    ))
+                })?;
+            ledger_keys.push((encoded, ledger_key));
+        }
+        ledger_keys.sort_by(|a, b| a.0.cmp(&b.0));
+        ledger_keys.dedup_by(|a, b| a.0 == b.0);
+        ledger_keys.truncate(MAX_KEY_PATTERN_CANDIDATES);
+        Ok(ledger_keys.into_iter().map(|(_, key)| key).collect())
+    }
+
+    fn expand_token(
+        token: &KeyPatternToken,
+        known: &KeyPatternCandidateInput,
+    ) -> SentinelResult<Vec<ScVal>> {
+        match token {
+            KeyPatternToken::Literal(value) => Ok(vec![parse_key_expr(value)?]),
+            KeyPatternToken::SymbolPrefix(prefix) => Self::expand_symbol_prefix(prefix, known),
+            KeyPatternToken::AddressWildcard => Self::expand_addresses(known),
+            KeyPatternToken::Composite(tokens) => {
+                let mut options = Vec::with_capacity(tokens.len());
+                for token in tokens {
+                    options.push(Self::expand_token(token, known)?);
+                }
+                let combinations = Self::cartesian(options)?;
+                let mut values = Vec::with_capacity(combinations.len());
+                for combination in combinations {
+                    let sc_vec: ScVec = combination.try_into().map_err(|error| {
+                        SentinelError::InvalidXdrKey(format!(
+                            "Failed to create composite key candidate: {error}"
+                        ))
+                    })?;
+                    values.push(ScVal::Vec(Some(sc_vec)));
+                }
+                Self::sorted_unique(values)
+            }
+        }
+    }
+
+    fn expand_symbol_prefix(
+        prefix: &str,
+        known: &KeyPatternCandidateInput,
+    ) -> SentinelResult<Vec<ScVal>> {
+        parse_key_expr(&format!("sym:{prefix}"))?;
+        let mut suffixes = known.symbol_suffixes.clone();
+        suffixes.sort();
+        suffixes.dedup();
+
+        let mut values = Vec::new();
+        for suffix in suffixes.into_iter().take(MAX_KEY_PATTERN_CANDIDATES) {
+            let symbol = format!("{prefix}{suffix}");
+            if let Ok(value) = parse_key_expr(&format!("sym:{symbol}")) {
+                values.push(value);
+            }
+        }
+        if values.is_empty() {
+            values.push(parse_key_expr(&format!("sym:{prefix}"))?);
+        }
+        Self::sorted_unique(values)
+    }
+
+    fn expand_addresses(known: &KeyPatternCandidateInput) -> SentinelResult<Vec<ScVal>> {
+        let mut addresses = known.addresses.clone();
+        addresses.sort();
+        addresses.dedup();
+
+        let mut values = Vec::new();
+        for address in addresses.into_iter().take(MAX_KEY_PATTERN_CANDIDATES) {
+            values.push(parse_key_expr(&format!("addr:{address}"))?);
+        }
+        Self::sorted_unique(values)
+    }
+
+    fn cartesian(options: Vec<Vec<ScVal>>) -> SentinelResult<Vec<Vec<ScVal>>> {
+        let mut combinations: Vec<Vec<ScVal>> = vec![Vec::new()];
+        for option_set in options {
+            if option_set.is_empty() {
+                return Ok(Vec::new());
+            }
+            let capacity = combinations
+                .len()
+                .saturating_mul(option_set.len())
+                .min(MAX_KEY_PATTERN_CANDIDATES);
+            let mut next = Vec::with_capacity(capacity);
+            'outer: for combination in &combinations {
+                for option in &option_set {
+                    if next.len() >= MAX_KEY_PATTERN_CANDIDATES {
+                        break 'outer;
+                    }
+                    let mut extended = combination.clone();
+                    extended.push(option.clone());
+                    next.push(extended);
+                }
+            }
+            combinations = next;
+        }
+        Ok(combinations)
+    }
+
+    fn sorted_unique(values: Vec<ScVal>) -> SentinelResult<Vec<ScVal>> {
+        let mut encoded = Vec::with_capacity(values.len());
+        for value in values {
+            let xdr = value.to_xdr_base64(safe_xdr_limits()).map_err(|error| {
+                SentinelError::SerializationError(format!(
+                    "Failed to encode key pattern candidate: {error}"
+                ))
+            })?;
+            encoded.push((xdr, value));
+        }
+        encoded.sort_by(|a, b| a.0.cmp(&b.0));
+        encoded.dedup_by(|a, b| a.0 == b.0);
+        Ok(encoded
+            .into_iter()
+            .take(MAX_KEY_PATTERN_CANDIDATES)
+            .map(|(_, value)| value)
+            .collect())
     }
 }
 

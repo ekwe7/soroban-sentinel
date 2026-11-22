@@ -39,12 +39,138 @@ pub enum Commands {
 
     /// Generate a systemd or launchd service definition for autonomous watching
     InstallService(InstallServiceArgs),
+
+    /// Generate a sentinel.toml fleet manifest
+    Init(InitArgs),
+
+    /// Encode a Soroban storage key expression as XDR
+    KeyEncode(KeyEncodeArgs),
+
+    /// Decode a base64 Soroban storage key XDR value
+    KeyDecode(KeyDecodeArgs),
+
+    /// Compare two saved JSON TTL reports without using RPC
+    DiffReports(DiffReportsArgs),
+
+    /// Estimate the fee for extending a contract footprint TTL
+    Forecast(ForecastArgs),
+}
+
+/// Command-line arguments for forecast.
+#[derive(Args, Debug, Clone)]
+pub struct ForecastArgs {
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+    #[arg(long, value_name = "LEDGER", value_parser = clap::value_parser!(u32).range(1..))]
+    pub extend_to: u32,
+    #[arg(long, value_name = "G...")]
+    pub source: String,
+    #[arg(long, default_value = "testnet")]
+    pub network: String,
+    #[arg(long, env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+}
+
+/// Command-line arguments for `sentinel init`.
+#[derive(Args, Debug, Clone)]
+pub struct InitArgs {
+    /// Path to the manifest to create
+    #[arg(long, default_value = "sentinel.toml", value_name = "PATH")]
+    pub output: std::path::PathBuf,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Contract ID to include (repeatable)
+    #[arg(long = "contract", value_name = "ID")]
+    pub contracts: Vec<String>,
+
+    /// Persistent symbol key to include on every contract (repeatable)
+    #[arg(long = "key", value_name = "SYM")]
+    pub keys: Vec<String>,
+
+    /// Warning threshold in ledgers
+    #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
+    pub warning_threshold: u32,
+
+    /// Critical threshold in ledgers
+    #[arg(long, value_name = "LEDGERS")]
+    pub critical_threshold: Option<u32>,
+
+    /// Do not prompt for missing values
+    #[arg(long)]
+    pub non_interactive: bool,
+
+    /// Replace an existing output file
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Command-line arguments for `sentinel key-encode`.
+#[derive(Args, Debug, Clone)]
+pub struct KeyEncodeArgs {
+    /// Key expression, such as `sym:Balance` or `vec[sym:Balance, u32:1]`
+    #[arg(value_name = "EXPRESSION")]
+    pub expression: String,
+
+    /// Contract ID; when supplied, encode a full LedgerKey instead of ScVal
+    #[arg(long, value_name = "ID")]
+    pub contract: Option<String>,
+
+    /// Ledger data durability for full LedgerKey output
+    #[arg(long, default_value = "persistent", value_parser = ["persistent", "temporary"])]
+    pub durability: String,
+
+    /// Output format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// Command-line arguments for `sentinel key-decode`.
+#[derive(Args, Debug, Clone)]
+pub struct KeyDecodeArgs {
+    /// Base64 XDR for a ScVal or LedgerKey
+    #[arg(value_name = "BASE64_XDR")]
+    pub xdr: String,
+
+    /// Output format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
+/// Command-line arguments for `sentinel diff-reports`.
+#[derive(Args, Debug, Clone)]
+pub struct DiffReportsArgs {
+    /// Older JSON TTL report
+    #[arg(value_name = "OLD_JSON")]
+    pub old: std::path::PathBuf,
+
+    /// Newer JSON TTL report
+    #[arg(value_name = "NEW_JSON")]
+    pub new: std::path::PathBuf,
+
+    /// Output format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Return exit code 2 when a risk regression or removal is found
+    #[arg(long)]
+    pub fail_on_regression: bool,
 }
 
 /// Command-line arguments for the `sentinel scan` command.
 #[derive(Args, Debug, Clone)]
 pub struct ScanArgs {
-    /// Target Soroban smart contract address (C... Strkey format)
+    /// Target Soroban smart contract address (C... Strkey format) or a contract alias
     #[arg(value_name = "CONTRACT_ID")]
     pub contract_id: String,
 
@@ -115,6 +241,24 @@ pub struct ScanArgs {
     /// Launch the interactive TUI dashboard (requires the `tui` Cargo feature and a TTY)
     #[arg(long)]
     pub tui: bool,
+
+    /// Webhook URL for WARN/CRITICAL alerts
+    #[arg(
+        long = "alert-webhook",
+        env = "SENTINEL_ALERT_WEBHOOK",
+        value_name = "URL"
+    )]
+    pub alert_webhook: Option<String>,
+    /// Alert payload format
+    #[arg(long = "alert-kind", default_value = "slack", value_parser = ["slack", "discord"])]
+    pub alert_kind: String,
+    /// Minimum risk level that triggers an alert
+    #[arg(long = "alert-min-level", default_value = "warn", value_parser = ["warn", "critical"])]
+    pub alert_min_level: String,
+
+    /// Replay an offline .sentinel-snap ledger snapshot instead of querying RPC
+    #[arg(long = "snapshot", value_name = "PATH")]
+    pub snapshot: Option<String>,
 }
 
 /// Command-line arguments for the cost-matrix command.
@@ -314,6 +458,7 @@ mod tests {
                 assert!(scan.baseline.is_none());
                 assert!(!scan.fail_on_regression);
                 assert!(!scan.tui);
+                assert!(scan.snapshot.is_none());
             }
             _ => panic!("expected scan command"),
         }
@@ -378,6 +523,7 @@ mod tests {
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
                 assert!(scan.fail_on_regression);
                 assert!(scan.tui);
+                assert!(scan.snapshot.is_none());
             }
             _ => panic!("expected scan command"),
         }

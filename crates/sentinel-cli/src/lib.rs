@@ -10,10 +10,14 @@ pub mod telemetry;
 #[cfg(feature = "tui")]
 pub mod tui;
 
-pub use args::{BundleArgs, Cli, Commands, InstallServiceArgs, RestoreArgs, ScanArgs};
+pub use args::{
+    BundleArgs, Cli, Commands, DiffReportsArgs, ForecastArgs, InitArgs, InstallServiceArgs,
+    KeyDecodeArgs, KeyEncodeArgs, RestoreArgs, ScanArgs,
+};
 pub use commands::{
-    resolve_rpc_url, run_bundle, run_install_service, run_restore, run_scan,
-    EXIT_CRITICAL_OR_ARCHIVED, EXIT_INVALID_ARGS, EXIT_OK, EXIT_RPC_FAILURE, EXIT_WARN,
+    resolve_rpc_url, run_bundle, run_diff_reports, run_init, run_install_service, run_key_decode,
+    run_key_encode, run_restore, run_scan, EXIT_CRITICAL_OR_ARCHIVED, EXIT_INVALID_ARGS, EXIT_OK,
+    EXIT_RPC_FAILURE, EXIT_WARN,
 };
 #[cfg(feature = "parquet")]
 pub use formatters::render_parquet;

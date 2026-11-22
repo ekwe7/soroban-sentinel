@@ -13,6 +13,7 @@ use sentinel_core::domain::compare::{compare_reports, BaselineSnapshot, MAX_BASE
 use sentinel_core::domain::{RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS};
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{ScanContractUseCase, ScanRequest, TTLReport};
+use sentinel_core::{AlertKind, AlertMinLevel, AlertNotifier, WebhookAlertNotifier};
 
 use crate::args::ScanArgs;
 #[cfg(feature = "parquet")]
@@ -197,7 +198,11 @@ fn emit_parquet(report: &TTLReport, path: Option<&str>) -> Result<(), String> {
     }
 }
 
-pub async fn run_scan(args: ScanArgs) -> i32 {
+pub async fn run_scan(mut args: ScanArgs) -> i32 {
+    if let Err(code) = apply_alias(&mut args) {
+        return code;
+    }
+
     #[cfg(not(feature = "tui"))]
     if args.tui {
         eprintln!(
@@ -219,6 +224,21 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
     }
 
     let format = args.format.to_lowercase();
+
+    if args.snapshot.is_some()
+        && (args.rpc_url.is_some() || args.rpc_timeout.is_some() || args.rpc_max_retries.is_some())
+    {
+        eprintln!("Error: --snapshot cannot be combined with RPC URL or RPC retry/timeout flags");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.snapshot.is_some() && args.baseline.is_some() {
+        eprintln!("Error: --snapshot cannot be combined with --baseline");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.snapshot.is_some() && (format == "csv" || format == "parquet") {
+        eprintln!("Error: --snapshot is not supported with --format csv or --format parquet");
+        return EXIT_INVALID_ARGS;
+    }
 
     #[cfg(not(feature = "parquet"))]
     if format == "parquet" {
@@ -298,14 +318,6 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         None
     };
 
-    let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
-        Ok(url) => url,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
     let threshold_config = match resolve_threshold_config(args.threshold, args.critical_threshold) {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -314,16 +326,6 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         }
     };
 
-    let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
-    let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
-    if let Some(retries) = args.rpc_max_retries {
-        let mut policy = rpc_client.retry_policy().clone();
-        policy.max_retries = retries;
-        rpc_client = rpc_client.with_retry_policy(policy);
-    }
-
-    let usecase = ScanContractUseCase::new(rpc_client);
-
     let mut request = ScanRequest::new(&args.contract_id)
         .with_network(&args.network)
         .with_threshold_config(threshold_config)
@@ -331,26 +333,83 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         .with_persistent_xdr_keys(args.key_xdr)
         .with_persistent_key_exprs(args.key_expr);
 
-    if let Some(ls) = args.ledger_seconds {
-        request = request.with_ledger_seconds(Some(ls));
+    if let Some(ledger_seconds) = args.ledger_seconds {
+        request = request.with_ledger_seconds(Some(ledger_seconds));
     }
 
-    let report = match usecase.execute(request).await {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return match err {
-                SentinelError::InvalidContractAddress(_)
-                | SentinelError::InvalidXdrKey(_)
-                | SentinelError::InvalidThresholdConfig(_)
-                | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
-                SentinelError::RpcConnectionTimeout(_)
-                | SentinelError::RpcResponseError { .. }
-                | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
-                _ => EXIT_INVALID_ARGS,
-            };
+    let report = if let Some(snapshot_path) = args.snapshot.as_deref() {
+        let replay = match sentinel_core::adapters::ReplayReader::replay(
+            snapshot_path,
+            network_passphrase(&args.network),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        match ScanContractUseCase::new(replay).execute(request).await {
+            Ok(report) => report,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
+            Ok(url) => url,
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
+        let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
+        if let Some(retries) = args.rpc_max_retries {
+            let mut policy = rpc_client.retry_policy().clone();
+            policy.max_retries = retries;
+            rpc_client = rpc_client.with_retry_policy(policy);
+        }
+        match ScanContractUseCase::new(rpc_client).execute(request).await {
+            Ok(report) => report,
+            Err(err) => {
+                eprintln!("Error: {err}");
+                return match err {
+                    SentinelError::InvalidContractAddress(_)
+                    | SentinelError::InvalidXdrKey(_)
+                    | SentinelError::InvalidThresholdConfig(_)
+                    | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
+                    SentinelError::RpcConnectionTimeout(_)
+                    | SentinelError::RpcResponseError { .. }
+                    | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
+                    _ => EXIT_INVALID_ARGS,
+                };
+            }
         }
     };
+
+    if let Some(webhook) = args.alert_webhook.as_deref() {
+        let notifier = match WebhookAlertNotifier::new(webhook) {
+            Ok(notifier) => notifier,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let kind = match args.alert_kind.as_str() {
+            "slack" => AlertKind::Slack,
+            "discord" => AlertKind::Discord,
+            _ => return EXIT_INVALID_ARGS,
+        };
+        let min_level = match args.alert_min_level.as_str() {
+            "warn" => AlertMinLevel::Warn,
+            "critical" => AlertMinLevel::Critical,
+            _ => return EXIT_INVALID_ARGS,
+        };
+        if let Err(_error) = notifier.notify(&report, kind, min_level).await {
+            eprintln!("Warning: alert delivery failed");
+        }
+    }
 
     #[cfg(feature = "tui")]
     if args.tui {
@@ -426,6 +485,81 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
             eprintln!("Error: {}", err);
             EXIT_INVALID_ARGS
         }
+    }
+}
+
+/// Returns the network passphrase used by snapshot replay compatibility checks.
+pub fn network_passphrase(network: &str) -> &'static str {
+    match network.to_lowercase().as_str() {
+        "testnet" => "Test SDF Network ; September 2015",
+        "mainnet" => "Public Global Stellar Network ; September 2015",
+        "futurenet" => "Test SDF Future Network ; October 2022",
+        "local" => "Standalone Network ; February 2017",
+        _ => "",
+    }
+}
+
+/// Resolves a contract alias into a `C...` strkey before the scan starts.
+///
+/// A valid strkey passes through untouched. Aliases are read from the TOML file
+/// named by `SENTINEL_ALIASES`, or from `./sentinel-aliases.toml` when present:
+///
+/// ```toml
+/// [aliases]
+/// treasury = "C..."
+/// ```
+///
+/// Unknown targets without a close match fall through to the normal
+/// "Invalid contract address" handling.
+fn apply_alias(args: &mut ScanArgs) -> Result<(), i32> {
+    use sentinel_core::domain::alias::{AliasError, AliasRegistry};
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AliasFile {
+        #[serde(default)]
+        aliases: std::collections::BTreeMap<String, String>,
+    }
+
+    let target = args.contract_id.trim().to_string();
+    if stellar_strkey::Contract::from_string(&target).is_ok() {
+        return Ok(());
+    }
+
+    let path = match std::env::var_os("SENTINEL_ALIASES").filter(|value| !value.is_empty()) {
+        Some(value) => std::path::PathBuf::from(value),
+        None => {
+            let default = std::path::PathBuf::from("sentinel-aliases.toml");
+            if !default.is_file() {
+                return Ok(());
+            }
+            default
+        }
+    };
+
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        eprintln!("Error: cannot read alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+    let file: AliasFile = toml::from_str(&text).map_err(|error| {
+        eprintln!("Error: invalid alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+    let registry = AliasRegistry::from_pairs(file.aliases).map_err(|error| {
+        eprintln!("Error: invalid alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+
+    match registry.resolve(&target) {
+        Ok(contract_id) => {
+            args.contract_id = contract_id;
+            Ok(())
+        }
+        Err(error @ AliasError::UnknownWithSuggestion { .. }) => {
+            eprintln!("Error: Invalid contract address: {error}");
+            Err(EXIT_INVALID_ARGS)
+        }
+        Err(_) => Ok(()),
     }
 }
 

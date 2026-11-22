@@ -2,10 +2,14 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use stellar_xdr::curr::{ReadXdr, SorobanTransactionData};
 
+use crate::domain::cache::{footprint_cache_key, SimulationCache, SimulationCacheEntry};
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
+use crate::ports::simulator::SimulationEngine;
 
 /// Maximum number of keys allowed in a single `getLedgerEntries` request by Soroban RPC.
 pub const MAX_KEYS_PER_REQUEST: usize = 200;
@@ -147,12 +151,23 @@ fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     }
 }
 
+/// Subset of a `simulateTransaction` JSON-RPC result used for fee caching.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimulateTransactionResult {
+    min_resource_fee: String,
+    latest_ledger: u32,
+    #[serde(default)]
+    transaction_data: Option<String>,
+}
+
 /// JSON-RPC 2.0 client for interacting with Soroban RPC nodes.
 #[derive(Debug, Clone)]
 pub struct SorobanRpcClient {
     rpc_url: String,
     http_client: reqwest::Client,
     retry_policy: RetryPolicy,
+    simulation_cache: Option<Arc<SimulationCache>>,
 }
 
 impl SorobanRpcClient {
@@ -173,6 +188,7 @@ impl SorobanRpcClient {
             rpc_url: rpc_url.into(),
             http_client,
             retry_policy: RetryPolicy::default(),
+            simulation_cache: None,
         }
     }
 
@@ -192,6 +208,7 @@ impl SorobanRpcClient {
             rpc_url: rpc_url.into(),
             http_client,
             retry_policy: RetryPolicy::default(),
+            simulation_cache: None,
         }
     }
 
@@ -209,6 +226,87 @@ impl SorobanRpcClient {
     /// Returns the active retry policy.
     pub fn retry_policy(&self) -> &RetryPolicy {
         &self.retry_policy
+    }
+
+    /// Enables in-memory caching of simulation fee results for repeated footprints.
+    ///
+    /// Without this builder the client behaves exactly as before: every call to
+    /// [`Self::simulate_transaction`] performs a JSON-RPC simulation.
+    pub fn with_simulation_cache(mut self, cache: SimulationCache) -> Self {
+        self.simulation_cache = Some(Arc::new(cache));
+        self
+    }
+
+    /// Returns the configured simulation cache, if any.
+    pub fn simulation_cache(&self) -> Option<&SimulationCache> {
+        self.simulation_cache.as_deref()
+    }
+
+    /// Simulates a transaction and caches the fee result by footprint XDR hash.
+    ///
+    /// A cache hit never issues an RPC request. A miss, or an entry older than
+    /// the cache's ledger horizon, triggers `simulateTransaction`. CPU
+    /// instructions and memory bytes are taken from the returned
+    /// `SorobanTransactionData` XDR; memory bytes are the sum of read and write
+    /// bytes in the declared resource footprint.
+    #[tracing::instrument(skip(self, transaction_xdr_base64, footprint_xdr_base64))]
+    pub async fn simulate_transaction(
+        &self,
+        transaction_xdr_base64: &str,
+        footprint_xdr_base64: &str,
+        latest_ledger: u32,
+    ) -> SentinelResult<SimulationCacheEntry> {
+        let cache_key = footprint_cache_key(footprint_xdr_base64);
+        if let Some(cache) = &self.simulation_cache {
+            if let Some(cached) = cache.get(&cache_key, latest_ledger) {
+                return Ok(cached);
+            }
+        }
+
+        let result: SimulateTransactionResult = self
+            .send_rpc_request(
+                "simulateTransaction",
+                serde_json::json!({ "transaction": transaction_xdr_base64 }),
+            )
+            .await?;
+
+        let min_resource_fee = result.min_resource_fee.parse::<u64>().map_err(|error| {
+            SentinelError::SerializationError(format!(
+                "Invalid minResourceFee in simulateTransaction response: {error}"
+            ))
+        })?;
+
+        let (cpu_instructions, memory_bytes) = match result.transaction_data {
+            Some(transaction_data) => {
+                let decoded = SorobanTransactionData::from_xdr_base64(
+                    &transaction_data,
+                    crate::adapters::safe_xdr_limits(),
+                )
+                .map_err(|error| {
+                    SentinelError::SerializationError(format!(
+                        "Invalid transactionData in simulateTransaction response: {error}"
+                    ))
+                })?;
+                let resources = decoded.resources;
+                (
+                    u64::from(resources.instructions),
+                    u64::from(resources.read_bytes)
+                        .saturating_add(u64::from(resources.write_bytes)),
+                )
+            }
+            None => (0, 0),
+        };
+
+        let entry = SimulationCacheEntry {
+            min_resource_fee,
+            latest_ledger: result.latest_ledger,
+            cpu_instructions,
+            memory_bytes,
+        };
+        if let Some(cache) = &self.simulation_cache {
+            cache.insert(cache_key, entry.clone());
+        }
+        Ok(entry)
     }
 
     /// Internal generic JSON-RPC 2.0 request dispatcher with retry and exponential backoff middleware.
@@ -423,6 +521,25 @@ impl LedgerReader for SorobanRpcClient {
         } else {
             Ok(None)
         }
+    }
+}
+
+#[async_trait]
+impl SimulationEngine for SorobanRpcClient {
+    async fn simulate_transaction(
+        &self,
+        transaction_xdr_base64: &str,
+        latest_ledger: u32,
+    ) -> SentinelResult<crate::ports::RentEstimate> {
+        let result =
+            SorobanRpcClient::simulate_transaction(self, transaction_xdr_base64, "", latest_ledger)
+                .await?;
+        Ok(crate::ports::RentEstimate {
+            min_resource_fee_stroops: result.min_resource_fee,
+            latest_ledger: result.latest_ledger,
+            cpu_instructions: result.cpu_instructions,
+            memory_bytes: result.memory_bytes,
+        })
     }
 }
 
