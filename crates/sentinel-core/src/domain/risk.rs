@@ -23,6 +23,13 @@ pub enum RiskLevel {
     Archived,
 }
 
+impl RiskLevel {
+    /// Whether this risk needs an immediate alert, bypassing warning hysteresis.
+    pub const fn is_critical_or_worse(self) -> bool {
+        matches!(self, Self::Critical | Self::Archived)
+    }
+}
+
 impl std::fmt::Display for RiskLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

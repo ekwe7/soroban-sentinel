@@ -9,6 +9,7 @@ pub mod compare;
 pub mod debt;
 pub mod entry;
 pub mod footprint;
+pub mod hysteresis;
 pub mod key_pattern;
 pub mod network_limits;
 pub mod planner;
@@ -32,6 +33,7 @@ pub use compare::{
 pub use debt::{RentDebt, RentDebtCalculator};
 pub use entry::{Durability, EntryType, InstanceStorageBreakdown, SacAssetInfo, StorageEntry};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
+pub use hysteresis::{AlertAction, HysteresisConfig, HysteresisFilter};
 pub use key_pattern::{
     parse_key_pattern, KeyPattern, KeyPatternCandidateInput, KeyPatternToken,
     MAX_KEY_PATTERN_CANDIDATES, MAX_KEY_PATTERN_LEN,
