@@ -50,25 +50,25 @@ struct ContractInput {
 }
 
 #[derive(Debug, Serialize)]
-struct BundleOutput {
-    network: String,
-    source_account: String,
-    latest_ledger: u32,
-    extend_to_ledger: u32,
-    max_entries_per_transaction: usize,
-    signed: bool,
-    total_fee_stroops: u64,
-    transactions: Vec<BundleTransactionOutput>,
+pub(crate) struct BundleOutput {
+    pub(crate) network: String,
+    pub(crate) source_account: String,
+    pub(crate) latest_ledger: u32,
+    pub(crate) extend_to_ledger: u32,
+    pub(crate) max_entries_per_transaction: usize,
+    pub(crate) signed: bool,
+    pub(crate) total_fee_stroops: u64,
+    pub(crate) transactions: Vec<BundleTransactionOutput>,
 }
 
 #[derive(Debug, Serialize)]
-struct BundleTransactionOutput {
-    entry_count: usize,
-    extend_to_ledger: u32,
-    resource_fee_stroops: u64,
-    base_fee_stroops: u32,
-    total_fee_stroops: u64,
-    transaction_xdr_base64: String,
+pub(crate) struct BundleTransactionOutput {
+    pub(crate) entry_count: usize,
+    pub(crate) extend_to_ledger: u32,
+    pub(crate) resource_fee_stroops: u64,
+    pub(crate) base_fee_stroops: u32,
+    pub(crate) total_fee_stroops: u64,
+    pub(crate) transaction_xdr_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,7 +132,8 @@ pub async fn run_bundle(args: BundleArgs) -> i32 {
     }
 }
 
-enum BundleCommandError {
+#[derive(Debug)]
+pub(crate) enum BundleCommandError {
     Invalid(String),
     Rpc(String),
 }
@@ -150,7 +151,7 @@ impl From<sentinel_core::error::SentinelError> for BundleCommandError {
     }
 }
 
-async fn run_bundle_inner(args: BundleArgs) -> Result<BundleOutput, BundleCommandError> {
+pub(crate) async fn run_bundle_inner(args: BundleArgs) -> Result<BundleOutput, BundleCommandError> {
     if args.extend_by == 0 {
         return Err(BundleCommandError::Invalid(
             "--extend-by must be greater than 0".to_string(),

@@ -1,0 +1,55 @@
+[package]
+name = "sentinel-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+sentinel-core = { path = "../crates/sentinel-core", features = ["fuzzing"] }
+stellar-xdr = { version = "22.0.0", default-features = false, features = ["curr", "std", "base64"] }
+
+[[bin]]
+name = "extract_wasm_hash_from_instance_entry"
+path = "fuzz_targets/extract_wasm_hash_from_instance_entry.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "derive_persistent_xdr_key"
+path = "fuzz_targets/derive_persistent_xdr_key.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compute_byte_size"
+path = "fuzz_targets/compute_byte_size.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "get_ledger_entries_response"
+path = "fuzz_targets/get_ledger_entries_response.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "get_latest_ledger_response"
+path = "fuzz_targets/get_latest_ledger_response.rs"
+test = false
+doc = false
+
+# Keep cargo-fuzz out of the main workspace so `cargo test --workspace`
+# never needs the nightly toolchain.
+[workspace]
+
+# A lighter release profile keeps the sanitizer build small enough for CI
+# smoke runs; cargo-fuzz still injects coverage and ASan flags.
+[profile.release]
+opt-level = 1
+codegen-units = 16
+lto = false

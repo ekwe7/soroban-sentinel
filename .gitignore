@@ -3,6 +3,9 @@
 target/
 **/*.rs.bk
 
+# Fuzzing crash artifacts (seed corpora are committed)
+/fuzz/artifacts/
+
 # Cargo (Cargo.lock is tracked for reproducible application binary releases)
 # (do not ignore Cargo.lock)
 

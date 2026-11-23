@@ -199,6 +199,7 @@ mod tests {
             ],
             overall_status: RiskLevel::Critical,
             archival_recommendations: Vec::new(),
+            sac_asset_info: None,
         };
 
         let json = render_sarif(&report).unwrap();

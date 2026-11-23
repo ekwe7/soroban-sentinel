@@ -1,0 +1,68 @@
+name: Fuzz smoke tests
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "crates/sentinel-core/**"
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz untrusted XDR and RPC parsing (60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "fuzz -> fuzz/target"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build all fuzz targets
+        run: cargo +nightly fuzz build
+
+      - name: Run each fuzz target for 60 seconds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-artifacts
+          for target in \
+            extract_wasm_hash_from_instance_entry \
+            derive_persistent_xdr_key \
+            compute_byte_size \
+            get_ledger_entries_response \
+            get_latest_ledger_response; do
+            echo "::group::cargo +nightly fuzz run ${target}"
+            cargo +nightly fuzz run "${target}" -- \
+              -max_total_time=60 -max_len=10485760 -rss_limit_mb=2048 || {
+                echo "${target} failed" | tee "fuzz-artifacts/${target}-failure.txt"
+                exit 1
+              }
+            echo "::endgroup::"
+          done
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-artifacts
+          path: |
+            fuzz-artifacts
+            fuzz/artifacts
+          if-no-files-found: warn

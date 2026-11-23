@@ -27,8 +27,34 @@ pub enum SentinelError {
     #[error("Invalid threshold configuration: {0}")]
     InvalidThresholdConfig(String),
 
+    #[error("Invalid signed transaction envelope: {0}")]
+    InvalidTransactionEnvelope(String),
+
+    #[error("Transaction {tx_hash} rejected by RPC (result code: {code:?})")]
+    TransactionRejected {
+        tx_hash: String,
+        code: Option<stellar_xdr::curr::TransactionResultCode>,
+    },
+
+    #[error("RPC still requested retry for transaction {0}")]
+    TransactionRetryExhausted(String),
+
     #[error("Invalid RPC URL: {0}")]
     InvalidRpcUrl(String),
+
+    #[error("Snapshot error: {0}")]
+    SnapshotError(String),
+
+    #[error("WASM analysis error: {0}")]
+    WasmAnalysisError(String),
+    #[error("Missing network config setting: {0}")]
+    MissingNetworkConfig(String),
+
+    #[error("Malformed network config setting: {0}")]
+    MalformedNetworkConfig(String),
+
+    #[error("Unexpected network config setting variant: {0}")]
+    UnexpectedNetworkConfigVariant(String),
 }
 
 /// Convenience type alias for `Result<T, SentinelError>`.

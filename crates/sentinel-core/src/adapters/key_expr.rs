@@ -31,6 +31,7 @@ pub const MAX_KEY_EXPR_LEN: usize = 1024;
 /// - `addr:<strkey>`: Account (`G...`) or Contract (`C...`) Strkey address
 /// - `bytes:<hex>`: Hex-encoded raw byte array
 /// - `vec[item1, item2, ...]`: Nested composite vector of expressions
+#[tracing::instrument(skip(input), fields(expr.len = input.len()))]
 pub fn parse_key_expr(input: &str) -> SentinelResult<ScVal> {
     let trimmed = input.trim();
     if trimmed.is_empty() {

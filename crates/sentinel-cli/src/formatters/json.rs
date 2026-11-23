@@ -175,6 +175,7 @@ mod tests {
             entries,
             overall_status: RiskLevel::Warn,
             archival_recommendations: Vec::new(),
+            sac_asset_info: None,
         };
 
         let json_str = render_json(&report).expect("Should serialize cleanly to JSON");
@@ -247,6 +248,7 @@ mod tests {
             entries,
             overall_status: RiskLevel::Ok,
             archival_recommendations: Vec::new(),
+            sac_asset_info: None,
         };
 
         let json_str = render_json(&report).unwrap();
@@ -271,6 +273,7 @@ mod tests {
             entries: vec![],
             overall_status: RiskLevel::Ok,
             archival_recommendations: Vec::new(),
+            sac_asset_info: None,
         };
 
         let json_str = render_json(&report).unwrap();

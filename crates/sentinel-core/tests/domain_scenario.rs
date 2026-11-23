@@ -135,6 +135,7 @@ mod domain {
                 )],
                 overall_status: RiskLevel::Ok,
                 archival_recommendations: Vec::new(),
+                sac_asset_info: None,
             };
             let parameters = parameters(1.0, 1.0, 100, 100, 20, 1_000);
 

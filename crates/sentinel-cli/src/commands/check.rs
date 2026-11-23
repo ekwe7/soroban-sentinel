@@ -88,6 +88,7 @@ pub async fn run_check(args: CheckArgs) -> i32 {
         }
         let (status, report, error) = match scan.execute(contract.request).await {
             Ok(report) => {
+                crate::telemetry::record_scan_metrics(&report);
                 let status = report.overall_status;
                 match status {
                     RiskLevel::Ok => overall.summary.ok += 1,
