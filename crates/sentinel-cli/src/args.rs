@@ -275,7 +275,7 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), or "sarif" (GitHub Code Scanning)
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), or "sarif" (GitHub Code Scanning), or "sonarqube" (SonarQube Generic Issues)
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 

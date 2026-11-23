@@ -22,7 +22,8 @@ use crate::args::ScanArgs;
 #[cfg(feature = "parquet")]
 use crate::formatters::render_parquet;
 use crate::formatters::{
-    render_csv, render_json_with_diff, render_markdown, render_sarif, render_text_with_diff,
+    render_csv, render_json_with_diff, render_markdown, render_sarif, render_sonarqube,
+    render_text_with_diff,
 };
 
 /// Exit code: All evaluated storage entries have status OK.
@@ -624,12 +625,13 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         },
         "csv" => render_csv(&report),
         "sarif" => render_sarif(&report),
+        "sonarqube" => render_sonarqube(&report),
         "markdown" => Ok(render_markdown(&report)),
         other => {
             let supported = if cfg!(feature = "parquet") {
-                "text, json, csv, parquet, sarif, markdown"
+                "text, json, csv, parquet, sarif, sonarqube, markdown"
             } else {
-                "text, json, csv, sarif, markdown"
+                "text, json, csv, sarif, sonarqube, markdown"
             };
             eprintln!(
                 "Error: Unsupported format '{}'. Supported formats: {}",
