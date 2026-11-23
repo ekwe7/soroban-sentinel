@@ -71,6 +71,10 @@ pub enum Commands {
 
     /// Display network state-archival and contract entry limits
     Network(NetworkArgs),
+    /// Remove sensitive storage keys and payloads from a saved scan report
+    Redact(RedactArgs),
+    /// Validate contract and key arguments, then check RPC health
+    DryRun(DryRunArgs),
 }
 
 #[derive(Args, Debug)]
@@ -79,6 +83,37 @@ pub struct DoctorArgs {
     pub rpc_url: Option<String>,
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
+}
+
+#[derive(Args, Clone)]
+pub struct RedactArgs {
+    #[arg(long, value_name = "SCAN_REPORT.json")]
+    pub input: std::path::PathBuf,
+    #[arg(long, value_name = "REDACTED.json")]
+    pub output: Option<std::path::PathBuf>,
+    /// Secret key for stable HMAC pseudonyms across reports
+    #[arg(long, hide_env_values = true, env = "SENTINEL_REDACT_SALT")]
+    pub salt: Option<String>,
+}
+
+impl std::fmt::Debug for RedactArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedactArgs")
+            .field("input", &self.input)
+            .field("output", &self.output)
+            .field("salt", &self.salt.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DryRunArgs {
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
 }
 
 // Avoid Debug implementations that print provider credentials.

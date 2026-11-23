@@ -10,6 +10,7 @@ pub mod debt;
 pub mod durability_migration;
 pub mod entry;
 pub mod fee_bump;
+pub mod fee_optimizer;
 pub mod footprint;
 pub mod histogram;
 pub mod key_pattern;
@@ -38,6 +39,7 @@ pub use entry::{Durability, EntryType, InstanceStorageBreakdown, SacAssetInfo, S
 pub use fee_bump::{
     recommend_inclusion_fee, FeeBumpError, FeePercentiles, FeeRecommendation, FeeUrgency,
 };
+pub use fee_optimizer::{optimize_bump_batch, FeeOptimizerEntry, ScheduledExtension, UrgencyTier};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
 pub use key_pattern::{
     parse_key_pattern, KeyPattern, KeyPatternCandidateInput, KeyPatternToken,

@@ -1,6 +1,7 @@
 //! Driven adapters connecting sentinel-core to external technologies (XDR, RPC, Network).
 
 pub mod auth;
+pub mod circuit_breaker;
 pub mod failover_rpc;
 pub mod fee_bump_envelope;
 pub mod key_expr;
@@ -14,6 +15,7 @@ pub mod xdr_keys;
 pub use auth::{
     footprint_to_xdr_base64, parse_ledger_footprint, read_only_footprint, split_footprint_keys,
 };
+pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerReader, CircuitState};
 pub use failover_rpc::{EndpointHealthSnapshot, FailoverConfig, MultiRpcFailoverReader};
 pub use fee_bump_envelope::{build_fee_bump_envelope, fee_bump_envelope_to_xdr_base64};
 pub use key_expr::{parse_key_expr, MAX_KEY_EXPR_DEPTH, MAX_KEY_EXPR_LEN};
