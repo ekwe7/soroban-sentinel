@@ -15,9 +15,11 @@ use crate::domain::cold_storage::{
     recommend_archival, ArchivalPolicy, ArchivalRecommendation, ExtensionHistory,
 };
 use crate::domain::{
-    calculate_remaining_ledgers, estimate_remaining_days, estimate_remaining_seconds_with_velocity,
-    evaluate_risk, Durability, EntryType, InstanceStorageBreakdown, RentDebt, RentDebtCalculator,
-    RiskLevel, SacAssetInfo, StorageEntry, ThresholdConfig, TARGET_LEDGER_CLOSE_SECONDS,
+    calculate_remaining_ledgers, detect_contract_upgrade, estimate_remaining_days,
+    estimate_remaining_seconds_with_velocity, evaluate_risk, format_contract_code_hash,
+    ContractUpgradeBaseline, ContractUpgradeEvent, Durability, EntryType, InstanceStorageBreakdown,
+    RentDebt, RentDebtCalculator, RiskLevel, SacAssetInfo, StorageEntry, ThresholdConfig,
+    TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -192,6 +194,15 @@ pub struct TTLReport {
     /// Extracted metadata if the contract is a Stellar Asset Contract (SAC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sac_asset_info: Option<SacAssetInfo>,
+    /// WASM code hash observed in the contract instance, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_code_hash: Option<String>,
+    /// WASM bytecode size from the contract's `ContractCodeEntry`, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_bytecode_size: Option<u32>,
+    /// Upgrade detected against the configured historical executable baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_upgrade: Option<ContractUpgradeEvent>,
 }
 
 impl TTLReport {
@@ -293,6 +304,21 @@ fn compute_byte_size(entry_xdr_base64: &str) -> usize {
     }
 }
 
+fn contract_code_bytecode_size(entry_xdr_base64: &str) -> Option<u32> {
+    let data = if let Ok(entry) =
+        stellar_xdr::curr::LedgerEntry::from_xdr_base64(entry_xdr_base64, safe_xdr_limits())
+    {
+        entry.data
+    } else {
+        stellar_xdr::curr::LedgerEntryData::from_xdr_base64(entry_xdr_base64, safe_xdr_limits())
+            .ok()?
+    };
+    let stellar_xdr::curr::LedgerEntryData::ContractCode(code) = data else {
+        return None;
+    };
+    u32::try_from(code.code.len()).ok()
+}
+
 /// Fuzzing entry point for the scan byte-size computation.
 ///
 /// Keeps the production helper private while allowing the fuzz target in `fuzz/`
@@ -307,6 +333,7 @@ pub fn fuzz_compute_byte_size(entry_xdr_base64: &str) -> usize {
 pub struct ScanContractUseCase<R: LedgerReader> {
     reader: R,
     archival: Option<(ArchivalPolicy, HashMap<String, ExtensionHistory>)>,
+    upgrade_baseline: Option<(ContractUpgradeBaseline, RentDebtCalculator)>,
 }
 
 impl<R: LedgerReader> ScanContractUseCase<R> {
@@ -315,6 +342,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         Self {
             reader,
             archival: None,
+            upgrade_baseline: None,
         }
     }
 
@@ -326,6 +354,16 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         histories: HashMap<String, ExtensionHistory>,
     ) -> Self {
         self.archival = Some((policy, histories));
+        self
+    }
+
+    /// Compare WASM executable state with a prior scan and calculate the minimum-TTL rent delta.
+    pub fn with_upgrade_baseline(
+        mut self,
+        baseline: ContractUpgradeBaseline,
+        rent_calculator: RentDebtCalculator,
+    ) -> Self {
+        self.upgrade_baseline = Some((baseline, rent_calculator));
         self
     }
 
@@ -416,6 +454,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
 
         let mut wasm_hash_opt: Option<[u8; 32]> = None;
         let mut sac_asset_info_opt: Option<SacAssetInfo> = None;
+        let mut contract_bytecode_size = None;
+        let mut contract_upgrade = None;
 
         if let Some(entry) = instance_entry_opt {
             let byte_size = compute_byte_size(&entry.entry_xdr_base64);
@@ -485,6 +525,44 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
 
             report_keys.push(code_key_xdr);
             if let Some(code_entry) = code_entry_opt {
+                let bytecode_size = contract_code_bytecode_size(&code_entry.entry_xdr_base64);
+                if let Some(size) = bytecode_size {
+                    contract_bytecode_size = Some(size);
+                    if let (Some((baseline, calculator)), Some(current_hash)) =
+                        (&self.upgrade_baseline, wasm_hash_opt)
+                    {
+                        let baseline_rent =
+                            calculator.minimum_ttl_rent_stroops(baseline.bytecode_size);
+                        let current_rent = calculator.minimum_ttl_rent_stroops(size);
+                        let baseline_rent = i128::try_from(baseline_rent).map_err(|_| {
+                            crate::error::SentinelError::SerializationError(
+                                "baseline minimum-TTL rent exceeds supported range".to_string(),
+                            )
+                        })?;
+                        let current_rent = i128::try_from(current_rent).map_err(|_| {
+                            crate::error::SentinelError::SerializationError(
+                                "current minimum-TTL rent exceeds supported range".to_string(),
+                            )
+                        })?;
+                        let rent_delta =
+                            current_rent.checked_sub(baseline_rent).ok_or_else(|| {
+                                crate::error::SentinelError::SerializationError(
+                                    "minimum-TTL rent delta exceeds supported range".to_string(),
+                                )
+                            })?;
+                        contract_upgrade = detect_contract_upgrade(
+                            *baseline,
+                            current_hash,
+                            size,
+                            latest_ledger,
+                            rent_delta,
+                        );
+                    }
+                } else if self.upgrade_baseline.is_some() {
+                    return Err(crate::error::SentinelError::SerializationError(
+                        "contract code entry could not be decoded for upgrade tracking".into(),
+                    ));
+                }
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
                 let live_until = code_entry.live_until_ledger_seq;
                 let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
@@ -505,6 +583,11 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     status,
                 ));
             } else {
+                if self.upgrade_baseline.is_some() {
+                    return Err(crate::error::SentinelError::SerializationError(
+                        "contract code entry is missing during upgrade tracking".into(),
+                    ));
+                }
                 // Missing/archived code entry
                 reports.push(StorageEntryReport::new(
                     "code_wasm",
@@ -601,6 +684,9 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 overall_status,
                 archival_recommendations,
                 sac_asset_info: sac_asset_info_opt,
+                contract_code_hash: wasm_hash_opt.map(|hash| format_contract_code_hash(&hash)),
+                contract_bytecode_size,
+                contract_upgrade,
             },
             report_keys,
         ))

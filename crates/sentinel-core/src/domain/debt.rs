@@ -36,6 +36,11 @@ pub struct RentDebt {
 }
 
 impl RentDebtCalculator {
+    /// Estimate rent for a new minimum persistent TTL in whole stroops.
+    pub fn minimum_ttl_rent_stroops(&self, byte_size: u32) -> u128 {
+        self.rent(byte_size, self.min_persistent_ttl.get())
+    }
+
     /// Compute costs for one expired entry with a known original TTL and serialized size.
     /// The original live-until ledger is inclusive. Zero is the scan's missing-TTL sentinel.
     pub fn calculate(

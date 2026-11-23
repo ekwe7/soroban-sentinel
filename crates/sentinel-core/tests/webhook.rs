@@ -25,6 +25,9 @@ fn report(status: RiskLevel) -> TTLReport {
         overall_status: status,
         archival_recommendations: vec![],
         sac_asset_info: None,
+        contract_code_hash: None,
+        contract_bytecode_size: None,
+        contract_upgrade: None,
     }
 }
 

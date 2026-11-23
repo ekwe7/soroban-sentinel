@@ -53,6 +53,9 @@ struct FleetReport {
 }
 
 pub async fn run_check(args: CheckArgs) -> i32 {
+    if let Some(id) = &args.contract_id {
+        return run_monitoring_check(id, &args.scan).await;
+    }
     let rpc_env = match std::env::var("SOROBAN_RPC_URL") {
         Ok(url) => Some(url),
         Err(std::env::VarError::NotPresent) => None,
@@ -152,4 +155,45 @@ pub async fn run_check(args: CheckArgs) -> i32 {
         );
     }
     overall.summary.exit_code()
+}
+
+async fn run_monitoring_check(id: &str, options: &crate::args::StorageScanOptions) -> i32 {
+    let report = match super::top_consumers::scan_entries(id, options).await {
+        Ok(report) => report,
+        Err((_, error)) => {
+            println!("SENTINEL UNKNOWN - {error}");
+            return 3;
+        }
+    };
+    let (code, status) = match report.overall_status {
+        RiskLevel::Ok => (0, "OK"),
+        RiskLevel::Warn => (1, "WARNING"),
+        RiskLevel::Critical | RiskLevel::Archived => (2, "CRITICAL"),
+    };
+    let Some(remaining) = report
+        .entries
+        .iter()
+        .map(|entry| entry.remaining_ledgers)
+        .min()
+    else {
+        println!("SENTINEL UNKNOWN - no resolved storage entries");
+        return 3;
+    };
+    let thresholds =
+        super::resolve_threshold_config(options.warning_threshold, options.critical_threshold)
+            .expect("scan_entries validated thresholds");
+    println!(
+        "SENTINEL {status} - contract {}: {} entries {} | remaining_ledgers={};{}:;{}:;0;",
+        report.contract_id,
+        report.entries.len(),
+        if code == 0 {
+            "healthy"
+        } else {
+            "require attention"
+        },
+        remaining.max(0),
+        thresholds.warning_ledgers,
+        thresholds.critical_ledgers
+    );
+    code
 }

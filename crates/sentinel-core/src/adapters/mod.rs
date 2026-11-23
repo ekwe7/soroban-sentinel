@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod failover_rpc;
+pub mod fee_bump_envelope;
 pub mod key_expr;
 pub mod simulation;
 pub mod snapshot;
@@ -14,6 +15,7 @@ pub use auth::{
     footprint_to_xdr_base64, parse_ledger_footprint, read_only_footprint, split_footprint_keys,
 };
 pub use failover_rpc::{EndpointHealthSnapshot, FailoverConfig, MultiRpcFailoverReader};
+pub use fee_bump_envelope::{build_fee_bump_envelope, fee_bump_envelope_to_xdr_base64};
 pub use key_expr::{parse_key_expr, MAX_KEY_EXPR_DEPTH, MAX_KEY_EXPR_LEN};
 pub use simulation::{build_extend_footprint_ttl_envelope, envelope_to_xdr_base64};
 pub use snapshot::{
@@ -22,7 +24,7 @@ pub use snapshot::{
 };
 pub use soroban_rpc::{
     validate_rpc_url, RetryPolicy, SorobanRpcClient, DEFAULT_BASE_RETRY_DELAY_MS,
-    DEFAULT_MAX_RETRIES, MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
+    DEFAULT_MAX_RETRIES, MAX_BATCH_REQUESTS, MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
 };
 pub use wasm_sections::{analyze_wasm, MAX_WASM_ANALYSIS_BYTES};
 pub use webhook::WebhookAlertNotifier;

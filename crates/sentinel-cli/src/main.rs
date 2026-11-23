@@ -46,6 +46,21 @@ async fn main() {
         Ok(c) => c,
         Err(err) => {
             if err.use_stderr() {
+                let mut arguments = env::args().skip(1);
+                while let Some(argument) = arguments.next() {
+                    if argument == "--otlp-endpoint" {
+                        arguments.next();
+                        continue;
+                    }
+                    if argument.starts_with("--otlp-endpoint=") {
+                        continue;
+                    }
+                    if argument == "check" {
+                        println!("SENTINEL UNKNOWN - invalid monitoring arguments");
+                        std::process::exit(3);
+                    }
+                    break;
+                }
                 let _ = err.print();
                 std::process::exit(commands::EXIT_INVALID_ARGS);
             } else {
@@ -57,6 +72,7 @@ async fn main() {
     let telemetry = telemetry::init(&TelemetryConfig::resolve(cli.otlp_endpoint.as_deref()));
 
     let exit_code = match cli.command {
+        Commands::TopConsumers(args) => commands::run_top_consumers(args).await,
         Commands::Check(args) => commands::run_check(args).await,
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
         Commands::Scan(args) => commands::run_scan(*args).await,
@@ -70,6 +86,7 @@ async fn main() {
         Commands::KeyEncode(args) => commands::run_key_encode(args),
         Commands::KeyDecode(args) => commands::run_key_decode(args),
         Commands::DiffReports(args) => commands::run_diff_reports(args),
+        Commands::DiffNetworks(args) => commands::run_diff_networks(args).await,
         Commands::Doctor(args) => commands::doctor::run_doctor(args).await,
         Commands::Watch(args) => commands::watch::run_watch(*args).await,
         Commands::Forecast(args) => commands::run_forecast(args).await,
