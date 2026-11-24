@@ -173,6 +173,7 @@ mod tests {
             network: "testnet".to_string(),
             latest_ledger: 100,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries: vec![
                 StorageEntryReport::new(
                     "persistent:ADMIN",
@@ -200,6 +201,9 @@ mod tests {
             overall_status: RiskLevel::Critical,
             archival_recommendations: Vec::new(),
             sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         };
 
         let json = render_sarif(&report).unwrap();

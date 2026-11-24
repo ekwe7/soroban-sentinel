@@ -502,6 +502,21 @@ fn test_cli_scan_invalid_rpc_bounds_returns_exit_code_10() {
     ));
 }
 
+// Test N2: Invalid --sample-window bounds return exit code 10
+#[test]
+fn test_cli_scan_invalid_sample_window_returns_exit_code_10() {
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "--sample-window",
+        "1",
+    ]);
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("Sample window must be between"));
+}
+
 // Test O: Scan with --baseline comparison against wiremock
 #[tokio::test]
 async fn test_cli_scan_baseline_comparison() {

@@ -122,6 +122,7 @@ mod domain {
                 network: "testnet".to_string(),
                 latest_ledger: 100,
                 ledger_velocity_seconds: 5.0,
+                burn_rate: Default::default(),
                 entries: vec![StorageEntryReport::new(
                     "persistent:ADMIN",
                     EntryType::PersistentData,
@@ -136,6 +137,9 @@ mod domain {
                 overall_status: RiskLevel::Ok,
                 archival_recommendations: Vec::new(),
                 sac_asset_info: None,
+                contract_code_hash: None,
+                contract_bytecode_size: None,
+                contract_upgrade: None,
             };
             let parameters = parameters(1.0, 1.0, 100, 100, 20, 1_000);
 

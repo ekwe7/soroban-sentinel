@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
+use crate::domain::burn_rate::LedgerCloseSample;
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
 
@@ -13,6 +14,7 @@ pub struct MockLedgerReader {
     latest_ledger: Arc<Mutex<Option<LatestLedgerInfo>>>,
     entries: Arc<Mutex<Vec<RawLedgerEntry>>>,
     velocity: Arc<Mutex<Option<f64>>>,
+    close_samples: Arc<Mutex<Option<Vec<LedgerCloseSample>>>>,
     injected_error: Arc<Mutex<Option<SentinelError>>>,
 }
 
@@ -32,6 +34,12 @@ impl MockLedgerReader {
     /// Set the stubbed ledger close velocity in seconds per ledger.
     pub fn with_velocity(self, velocity: f64) -> Self {
         *self.velocity.lock().unwrap() = Some(velocity);
+        self
+    }
+
+    /// Set the stubbed ledger close history used for burn rate calculation.
+    pub fn with_close_samples(self, samples: Vec<LedgerCloseSample>) -> Self {
+        *self.close_samples.lock().unwrap() = Some(samples);
         self
     }
 
@@ -90,6 +98,17 @@ impl LedgerReader for MockLedgerReader {
             return Err(err);
         }
         Ok(*self.velocity.lock().unwrap())
+    }
+
+    async fn get_ledger_close_samples(
+        &self,
+        _latest_ledger: u32,
+        _sample_window: u32,
+    ) -> SentinelResult<Option<Vec<LedgerCloseSample>>> {
+        if let Some(err) = self.injected_error.lock().unwrap().clone() {
+            return Err(err);
+        }
+        Ok(self.close_samples.lock().unwrap().clone())
     }
 }
 

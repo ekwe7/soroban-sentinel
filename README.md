@@ -293,6 +293,10 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 # Override measured ledger close velocity (1.0–60.0s)
 sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --ledger-seconds 5.8
+
+# Measure real burn velocity from the last 250 ledger close timestamps
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --sample-window 250
 ```
 
 ### OpenTelemetry OTLP Export (`--otlp-endpoint`)
@@ -444,7 +448,7 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 ```
 
 ### Standard Process Exit Codes
-`sentinel` sets standard UNIX exit codes suitable for CI/CD gates and automation:
+`sentinel scan` uses the following exit codes for automation:
 
 | Exit Code | Meaning | Condition |
 | :---: | :--- | :--- |
@@ -453,6 +457,44 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 | `2` | **Critical / Archived / Regression** | One or more evaluated entries have `status == CRITICAL` or `ARCHIVED`, or `--fail-on-regression` triggered by status worsening / entry removal |
 | `10` | **Invalid Arguments** | Malformed contract Strkey, unrecognized network, or invalid parameters |
 | `11` | **RPC Failure** | Network timeout, connection refused, or HTTP 5xx/4xx RPC communication failure |
+
+### Diagnose an RPC endpoint
+
+```sh
+sentinel doctor --network testnet
+sentinel doctor --network mainnet --rpc-url https://your-rpc.example
+```
+
+The diagnostic table shows round-trip latency, node health, ledger height,
+network identity, and Soroban protocol compatibility. Critical probe failures
+exit with status 1.
+
+### Watch a contract and send incident alerts
+
+```sh
+sentinel watch "$CONTRACT_ID" --network testnet --key Counter --interval 60
+```
+
+Set `PAGERDUTY_ROUTING_KEY` or `OPSGENIE_API_KEY` in the process environment to
+enable incident delivery. The corresponding flags are `--pagerduty-routing-key`
+and `--opsgenie-api-key`. Alert identifiers derive from the network, contract
+address, and canonical ledger key XDR. Warning risk produces a warning alert,
+while critical or archived risk produces a critical alert. A watched entry
+returning to OK resolves its alert. The watcher tracks successfully delivered
+alerts during its current process lifetime.
+
+### Core submission and key discovery
+
+`TransactionSubmitter::submit` takes signed envelope XDR in base64, the network
+passphrase, and a submission policy. It computes the hash locally and polls for
+confirmation. A timeout leaves the outcome unknown and returns the hash for
+follow-up.
+
+`discover_storage_keys` takes a contract address and decoded `ContractCodeEntry`.
+It returns persistent and temporary candidates inferred from storage-named
+types in the WASM spec. A caller can encode the returned `LedgerKey` values for
+`getLedgerEntries` to check existence. Private or dynamic keys may be absent
+from the spec and still require explicit input.
 
 ## 6. Repository Documentation Suite
 

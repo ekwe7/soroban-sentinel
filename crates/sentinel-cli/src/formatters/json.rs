@@ -1,6 +1,7 @@
 //! Machine-readable JSON output formatter for contract scan reports.
 
 use sentinel_core::domain::compare::BaselineDiff;
+use sentinel_core::domain::ContractUpgradeEvent;
 use sentinel_core::error::{SentinelError, SentinelResult};
 use sentinel_core::usecases::TTLReport;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,15 @@ pub struct JsonTTLReport {
     pub summary: JsonSummary,
     /// Detailed list of evaluated storage entries.
     pub entries: Vec<JsonEntryReport>,
+    /// WASM code hash observed in the contract instance, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_code_hash: Option<String>,
+    /// WASM bytecode size from the contract's `ContractCodeEntry`, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_bytecode_size: Option<u32>,
+    /// Upgrade detected against the configured historical executable baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_upgrade: Option<ContractUpgradeEvent>,
     /// Optional comparison against a baseline report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<BaselineDiff>,
@@ -100,6 +110,9 @@ impl From<&TTLReport> for JsonTTLReport {
             ledger_velocity_seconds: report.ledger_velocity_seconds,
             summary: json_summary,
             entries: json_entries,
+            contract_code_hash: report.contract_code_hash.clone(),
+            contract_bytecode_size: report.contract_bytecode_size,
+            contract_upgrade: report.contract_upgrade.clone(),
             changes: None,
         }
     }
@@ -172,10 +185,14 @@ mod tests {
             network: "testnet".to_string(),
             latest_ledger: 5_420_100,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries,
             overall_status: RiskLevel::Warn,
             archival_recommendations: Vec::new(),
             sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         };
 
         let json_str = render_json(&report).expect("Should serialize cleanly to JSON");
@@ -245,10 +262,14 @@ mod tests {
             network: "mainnet".to_string(),
             latest_ledger: 5_420_000,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries,
             overall_status: RiskLevel::Ok,
             archival_recommendations: Vec::new(),
             sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         };
 
         let json_str = render_json(&report).unwrap();
@@ -270,10 +291,14 @@ mod tests {
             network: "testnet".to_string(),
             latest_ledger: 5_000_000,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries: vec![],
             overall_status: RiskLevel::Ok,
             archival_recommendations: Vec::new(),
             sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         };
 
         let json_str = render_json(&report).unwrap();

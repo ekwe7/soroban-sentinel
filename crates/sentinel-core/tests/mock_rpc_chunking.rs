@@ -13,41 +13,42 @@ async fn test_rpc_chunking_with_250_keys() {
     // Generate 250 unique test keys
     let keys: Vec<String> = (0..250).map(|i| format!("TEST_KEY_{i}")).collect();
 
-    // Mock handler for getLedgerEntries
+    // Both 200-key chunks are sent as one JSON-RPC batch POST.
     Mock::given(method("POST"))
         .and(path("/"))
         .respond_with(|req: &wiremock::Request| {
-            let body: Value = serde_json::from_slice(&req.body).expect("Valid JSON");
-            assert_eq!(body["method"], "getLedgerEntries");
-
-            let keys_chunk = body["params"]["keys"]
-                .as_array()
-                .expect("Keys array in params");
-
-            let entries: Vec<Value> = keys_chunk
+            let requests: Vec<Value> = serde_json::from_slice(&req.body).expect("Valid JSON");
+            assert_eq!(requests.len(), 2);
+            let responses: Vec<Value> = requests
                 .iter()
-                .map(|k| {
+                .map(|request| {
+                    assert_eq!(request["method"], "getLedgerEntries");
+                    let entries: Vec<Value> = request["params"]["keys"]
+                        .as_array()
+                        .expect("Keys array in params")
+                        .iter()
+                        .map(|k| {
+                            serde_json::json!({
+                                "key": k.as_str().unwrap(),
+                                "xdr": format!("XDR_FOR_{}", k.as_str().unwrap()),
+                                "liveUntilLedgerSeq": 6000000,
+                                "lastModifiedLedgerSeq": 5900000,
+                            })
+                        })
+                        .collect();
                     serde_json::json!({
-                        "key": k.as_str().unwrap(),
-                        "xdr": format!("XDR_FOR_{}", k.as_str().unwrap()),
-                        "liveUntilLedgerSeq": 6000000,
-                        "lastModifiedLedgerSeq": 5900000,
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "result": {
+                            "latestLedger": 5950000,
+                            "entries": entries
+                        }
                     })
                 })
                 .collect();
-
-            let response_body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "latestLedger": 5950000,
-                    "entries": entries
-                }
-            });
-
-            ResponseTemplate::new(200).set_body_json(response_body)
+            ResponseTemplate::new(200).set_body_json(responses)
         })
-        .expect(2) // Expect exactly 2 requests for 250 keys
+        .expect(1)
         .mount(&mock_server)
         .await;
 
@@ -71,18 +72,19 @@ async fn test_rpc_chunking_with_250_keys() {
         assert_eq!(entry.last_modified_ledger_seq, 5900000);
     }
 
-    // Verify the mock expectations were satisfied (exactly 2 requests)
+    // Verify the mock expectations were satisfied (exactly 1 request)
     mock_server.verify().await;
 
-    // Additionally inspect received requests to verify chunk sizes: 200 then 50
+    // Inspect the batch payload to verify chunk sizes: 200 then 50.
     let received_requests = mock_server.received_requests().await.unwrap();
-    assert_eq!(received_requests.len(), 2);
+    assert_eq!(received_requests.len(), 1);
 
-    let body_1: Value = serde_json::from_slice(&received_requests[0].body).unwrap();
-    let body_2: Value = serde_json::from_slice(&received_requests[1].body).unwrap();
+    let body: Value = serde_json::from_slice(&received_requests[0].body).unwrap();
+    let batch = body.as_array().unwrap();
+    assert_eq!(batch.len(), 2);
 
-    let keys_req_1 = body_1["params"]["keys"].as_array().unwrap();
-    let keys_req_2 = body_2["params"]["keys"].as_array().unwrap();
+    let keys_req_1 = batch[0]["params"]["keys"].as_array().unwrap();
+    let keys_req_2 = batch[1]["params"]["keys"].as_array().unwrap();
 
     assert_eq!(keys_req_1.len(), MAX_KEYS_PER_REQUEST); // 200 keys
     assert_eq!(keys_req_2.len(), 50); // 50 keys
