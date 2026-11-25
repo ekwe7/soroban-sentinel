@@ -293,6 +293,10 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
 # Override measured ledger close velocity (1.0–60.0s)
 sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --ledger-seconds 5.8
+
+# Measure real burn velocity from the last 250 ledger close timestamps
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --sample-window 250
 ```
 
 ### OpenTelemetry OTLP Export (`--otlp-endpoint`)

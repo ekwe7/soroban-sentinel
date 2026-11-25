@@ -83,15 +83,19 @@ async fn main() {
         Commands::Restore(args) => commands::run_restore(args).await,
         Commands::InstallService(args) => commands::run_install_service(args),
         Commands::Init(args) => commands::run_init(args),
+        Commands::GenerateDocker(args) => commands::run_generate_docker(args),
         Commands::KeyEncode(args) => commands::run_key_encode(args),
         Commands::KeyDecode(args) => commands::run_key_decode(args),
         Commands::DiffReports(args) => commands::run_diff_reports(args),
         Commands::DiffNetworks(args) => commands::run_diff_networks(args).await,
+        Commands::KeyDiff(args) => commands::run_key_diff(args),
         Commands::Doctor(args) => commands::doctor::run_doctor(args).await,
+        Commands::TraceRoute(args) => commands::trace_route::run_trace_route(args).await,
         Commands::Watch(args) => commands::watch::run_watch(*args).await,
         Commands::Forecast(args) => commands::run_forecast(args).await,
         Commands::Redact(args) => commands::run_redact(args),
         Commands::DryRun(args) => commands::run_dry_run(args).await,
+        Commands::Trend(args) => commands::run_trend(args),
     };
 
     // Flush buffered spans/metrics before exiting, since `process::exit`

@@ -1,10 +1,14 @@
 use std::time::Duration;
 
 use crate::{
-    alerts::incident::{IncidentDispatcher, Provider},
+    adapters::alert_teams::TeamsAlertDispatcher,
+    alerts::{
+        datadog::{DatadogAdapter, DatadogSite},
+        incident::{IncidentDispatcher, Provider},
+    },
     args::WatchArgs,
     commands::{scan::prepare_scan, EXIT_INVALID_ARGS},
-    formatters::{render_json, render_text},
+    formatters::{render_json, render_text_with_options},
 };
 
 pub async fn run_watch(args: WatchArgs) -> i32 {
@@ -27,6 +31,18 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
             eprintln!("Error: {error}");
             return EXIT_INVALID_ARGS;
         }
+    };
+
+    let mut teams = if let Some(webhook_url) = args.alert_teams.as_deref() {
+        match TeamsAlertDispatcher::new(webhook_url) {
+            Ok(dispatcher) => Some(dispatcher),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        None
     };
 
     let providers = [
@@ -57,13 +73,33 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
         }
     };
 
+    // Build the optional Datadog adapter when credentials are provided.
+    let mut datadog: Option<DatadogAdapter> = if let Some(api_key) = args.datadog_api_key {
+        let site = match DatadogSite::parse(&args.datadog_site) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        match DatadogAdapter::new(api_key, &site) {
+            Ok(adapter) => Some(adapter),
+            Err(_) => {
+                eprintln!("Error: could not initialize Datadog HTTP client");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        None
+    };
+
     loop {
         match usecase.execute_with_keys(request.clone()).await {
             Ok((report, keys)) => {
                 let output = if format == "json" {
                     render_json(&report)
                 } else {
-                    Ok(render_text(&report))
+                    Ok(render_text_with_options(&report, args.scan.no_color))
                 };
                 match output {
                     Ok(output) => println!("{output}"),
@@ -72,6 +108,16 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
                 for dispatcher in &mut dispatchers {
                     if let Err(error) = dispatcher.observe(&report, &keys).await {
                         eprintln!("Watch notification failed: {error}");
+                    }
+                }
+                if let Some(dd) = datadog.as_mut() {
+                    if let Err(error) = dd.observe(&report).await {
+                        eprintln!("Datadog notification failed: {error}");
+                    }
+                }
+                if let Some(teams) = teams.as_mut() {
+                    if let Err(error) = teams.observe(&report).await {
+                        eprintln!("Teams notification failed: {error}");
                     }
                 }
             }

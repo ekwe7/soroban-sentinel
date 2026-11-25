@@ -1,7 +1,7 @@
 //! Deterministic XDR key derivation adapter using `stellar-xdr` and `stellar-strkey`.
 
 use std::str::FromStr;
-use stellar_strkey::{Contract, Strkey};
+use stellar_strkey::Contract;
 use stellar_xdr::curr::{
     AccountId, ConfigSettingId, ContractDataDurability, ContractExecutable, Hash, LedgerEntry,
     LedgerEntryData, LedgerKey, LedgerKeyConfigSetting, LedgerKeyContractCode,
@@ -10,6 +10,7 @@ use stellar_xdr::curr::{
 };
 
 use super::key_expr::parse_key_expr;
+use super::sc_address::parse_sc_address;
 use crate::domain::{
     parse_key_pattern, InstanceStorageBreakdown, KeyPattern, KeyPatternCandidateInput,
     KeyPatternToken, SacAssetInfo, MAX_KEY_PATTERN_CANDIDATES,
@@ -180,35 +181,6 @@ fn config_setting_key(setting_id: ConfigSettingId) -> SentinelResult<String> {
     .map_err(|error| {
         SentinelError::SerializationError(format!("Failed to encode config setting key: {error}"))
     })
-}
-
-/// Validates and parses a Stellar strkey address (`G...` account or `C...` contract) into an `ScAddress`.
-///
-/// Returns typed `SentinelError::InvalidContractAddress` diagnostics on malformed or unsupported address types.
-pub fn parse_sc_address(strkey: &str) -> SentinelResult<ScAddress> {
-    let trimmed = strkey.trim();
-    if trimmed.is_empty() {
-        return Err(SentinelError::InvalidContractAddress(
-            "Address string cannot be empty".to_string(),
-        ));
-    }
-    let parsed = Strkey::from_string(trimmed).map_err(|e| {
-        SentinelError::InvalidContractAddress(format!(
-            "Invalid strkey address '{}': {}",
-            trimmed, e
-        ))
-    })?;
-    match parsed {
-        Strkey::PublicKeyEd25519(pk) => {
-            let account_id = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk.0)));
-            Ok(ScAddress::Account(account_id))
-        }
-        Strkey::Contract(c) => Ok(ScAddress::Contract(Hash(c.0))),
-        other => Err(SentinelError::InvalidContractAddress(format!(
-            "Unsupported strkey address '{}': expected Account (G...) or Contract (C...), found {:?}",
-            trimmed, other
-        ))),
-    }
 }
 
 /// Derives the base64-encoded `LedgerKey` XDR for a Stellar Asset Contract (SAC) balance entry (`DataKey::Balance(Address)`).
@@ -874,44 +846,6 @@ mod tests {
     fn test_extract_wasm_hash_malformed_rejected() {
         let result = extract_wasm_hash_from_instance_entry("not-valid-xdr-base64!!");
         assert!(matches!(result, Err(SentinelError::InvalidXdrKey(_))));
-    }
-
-    #[test]
-    fn test_parse_sc_address_account_and_contract() {
-        let account_bytes = [15u8; 32];
-        let account_strkey = stellar_strkey::ed25519::PublicKey(account_bytes).to_string();
-        let sc_addr = parse_sc_address(&account_strkey).expect("should parse valid G... address");
-        if let ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(raw)))) =
-            sc_addr
-        {
-            assert_eq!(raw, account_bytes);
-        } else {
-            panic!("Expected ScAddress::Account");
-        }
-
-        let contract_bytes = [16u8; 32];
-        let contract_strkey = stellar_strkey::Contract(contract_bytes).to_string();
-        let sc_addr = parse_sc_address(&contract_strkey).expect("should parse valid C... address");
-        if let ScAddress::Contract(Hash(raw)) = sc_addr {
-            assert_eq!(raw, contract_bytes);
-        } else {
-            panic!("Expected ScAddress::Contract");
-        }
-    }
-
-    #[test]
-    fn test_parse_sc_address_invalid() {
-        let empty_err = parse_sc_address("").unwrap_err();
-        assert!(matches!(
-            empty_err,
-            SentinelError::InvalidContractAddress(_)
-        ));
-
-        let bad_strkey = parse_sc_address("G_INVALID_CHECKSUM_NOT_STRKEY").unwrap_err();
-        assert!(matches!(
-            bad_strkey,
-            SentinelError::InvalidContractAddress(_)
-        ));
     }
 
     #[test]

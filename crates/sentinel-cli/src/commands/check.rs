@@ -11,7 +11,7 @@ use crate::commands::{
     EXIT_CRITICAL_OR_ARCHIVED, EXIT_INVALID_ARGS, EXIT_OK, EXIT_RPC_FAILURE, EXIT_WARN,
 };
 use crate::config::load_manifest;
-use crate::formatters::{render_text, JsonTTLReport};
+use crate::formatters::{render_text_with_options, JsonTTLReport};
 
 #[derive(Serialize)]
 struct ContractResult {
@@ -100,7 +100,7 @@ pub async fn run_check(args: CheckArgs) -> i32 {
                     RiskLevel::Archived => overall.summary.archived += 1,
                 }
                 if !json {
-                    println!("{}", render_text(&report));
+                    println!("{}", render_text_with_options(&report, args.no_color));
                 }
                 (
                     Some(status),

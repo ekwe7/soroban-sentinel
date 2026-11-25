@@ -515,6 +515,7 @@ mod tests {
             network: "testnet".to_string(),
             latest_ledger: 900,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries,
             overall_status: RiskLevel::Ok,
             archival_recommendations: Vec::new(),

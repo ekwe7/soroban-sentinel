@@ -11,8 +11,8 @@ use std::time::Duration;
 use sentinel_core::adapters::{validate_rpc_url, SorobanRpcClient};
 use sentinel_core::domain::compare::{compare_reports, BaselineSnapshot, MAX_BASELINE_FILE_BYTES};
 use sentinel_core::domain::{
-    build_recommendation_plan, shell_quote, RecommendationAction, RiskLevel, ThresholdConfig,
-    DEFAULT_CRITICAL_LEDGERS,
+    build_recommendation_plan, shell_quote, validate_sample_window, RecommendationAction,
+    RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
 };
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{fetch_network_limits, ScanContractUseCase, ScanRequest, TTLReport};
@@ -22,7 +22,8 @@ use crate::args::ScanArgs;
 #[cfg(feature = "parquet")]
 use crate::formatters::render_parquet;
 use crate::formatters::{
-    render_csv, render_json_with_diff, render_markdown, render_sarif, render_text_with_diff,
+    render_csv, render_json_with_diff, render_markdown, render_ndjson, render_sarif,
+    render_text_with_diff_and_options,
 };
 
 /// Exit code: All evaluated storage entries have status OK.
@@ -434,6 +435,11 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         }
     }
 
+    if let Err(error) = validate_sample_window(args.sample_window) {
+        eprintln!("Error: --sample-window {}", error);
+        return EXIT_INVALID_ARGS;
+    }
+
     let baseline_snapshot = if let Some(ref path) = args.baseline {
         match load_and_validate_baseline(path, &args.contract_id, &args.network) {
             Ok(s) => Some(s),
@@ -459,7 +465,8 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         .with_threshold_config(threshold_config)
         .with_persistent_symbols(args.key)
         .with_persistent_xdr_keys(args.key_xdr)
-        .with_persistent_key_exprs(args.key_expr);
+        .with_persistent_key_exprs(args.key_expr)
+        .with_sample_window(args.sample_window);
 
     if let Some(ledger_seconds) = args.ledger_seconds {
         request = request.with_ledger_seconds(Some(ledger_seconds));
@@ -603,7 +610,9 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
 
     let output_result = match format.as_str() {
         "text" => {
-            let mut output = render_text_with_diff(&report, baseline_diff.as_ref());
+            let no_color = args.no_color || args.output.is_some();
+            let mut output =
+                render_text_with_diff_and_options(&report, baseline_diff.as_ref(), no_color);
             if let Some(plan) = recommendation_plan.as_ref() {
                 output.push('\n');
                 output.push_str(&render_recommendation_text(
@@ -622,14 +631,15 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             },
             Err(error) => Err(error),
         },
+        "ndjson" => render_ndjson(&report),
         "csv" => render_csv(&report),
         "sarif" => render_sarif(&report),
         "markdown" => Ok(render_markdown(&report)),
         other => {
             let supported = if cfg!(feature = "parquet") {
-                "text, json, csv, parquet, sarif, markdown"
+                "text, json, ndjson, csv, parquet, sarif, markdown"
             } else {
-                "text, json, csv, sarif, markdown"
+                "text, json, ndjson, csv, sarif, markdown"
             };
             eprintln!(
                 "Error: Unsupported format '{}'. Supported formats: {}",
@@ -642,7 +652,11 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
     match output_result {
         Ok(output) => {
             if let Some(path) = args.output.as_deref() {
-                let contents = format!("{}\n", output.trim_end_matches('\n'));
+                let contents = if output.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", output.trim_end_matches('\n'))
+                };
                 if let Err(err) = fs::write(path, contents) {
                     eprintln!("Error: failed to write --output '{}': {}", path, err);
                     return EXIT_INVALID_ARGS;
@@ -650,6 +664,10 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             } else if format == "csv" {
                 // The CSV writer already terminates every record; avoid a blank line.
                 println!("{}", output.trim_end_matches('\n'));
+            } else if format == "ndjson" {
+                if !output.is_empty() {
+                    println!("{}", output.trim_end_matches('\n'));
+                }
             } else {
                 println!("{}", output);
             }

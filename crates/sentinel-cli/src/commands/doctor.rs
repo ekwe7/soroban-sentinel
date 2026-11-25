@@ -4,18 +4,22 @@ use std::time::{Duration, Instant};
 use comfy_table::{Cell, Color, Table};
 use sentinel_core::{LedgerReader, RetryPolicy, SentinelError, SorobanRpcClient};
 
-use crate::{args::DoctorArgs, commands::resolve_rpc_url};
+use crate::{args::DoctorArgs, commands::resolve_rpc_url, formatters::is_color_disabled};
 
 const MIN_SOROBAN_PROTOCOL: u32 = 20;
 
 pub async fn run_doctor(args: DoctorArgs) -> i32 {
+    let no_color = is_color_disabled(args.no_color);
     let mut table = Table::new();
+    if no_color {
+        table.force_no_tty();
+    }
     table.set_header(["Check", "Result", "Details"]);
     let mut passed = true;
     let mut row = |name, ok, detail: String| {
         passed &= ok;
         let mut status = Cell::new(if ok { "PASS" } else { "FAIL" });
-        if io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        if !no_color && io::stdout().is_terminal() {
             status = status.fg(if ok { Color::Green } else { Color::Red });
         }
         table.add_row(vec![Cell::new(name), status, Cell::new(detail)]);

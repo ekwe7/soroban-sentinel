@@ -131,6 +131,8 @@ pub struct StorageEntry {
     byte_size: usize,
     live_until_ledger: u32,
     last_modified_ledger: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payload_bytes: Option<usize>,
 }
 
 impl StorageEntry {
@@ -150,7 +152,19 @@ impl StorageEntry {
             byte_size,
             live_until_ledger,
             last_modified_ledger,
+            payload_bytes: None,
         }
+    }
+
+    /// Sets the raw payload byte size (un-enveloped ScVal value size).
+    pub fn with_payload_bytes(mut self, payload_bytes: usize) -> Self {
+        self.payload_bytes = Some(payload_bytes);
+        self
+    }
+
+    /// Returns the raw payload byte size, if known.
+    pub fn payload_bytes(&self) -> Option<usize> {
+        self.payload_bytes
     }
 
     /// Returns the human-readable or base64 key identifier.

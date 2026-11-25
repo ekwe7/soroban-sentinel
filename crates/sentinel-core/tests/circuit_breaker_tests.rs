@@ -10,19 +10,15 @@ use std::sync::{
 
 struct MockReader {
     calls: Arc<AtomicUsize>,
-    failures_left: AtomicUsize,
+    failures_left: std::sync::Mutex<usize>,
 }
 #[async_trait]
 impl LedgerReader for MockReader {
     async fn get_latest_ledger(&self) -> SentinelResult<LatestLedgerInfo> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if self
-            .failures_left
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n > 0).then(|| n - 1)
-            })
-            .is_ok()
-        {
+        let mut remaining = self.failures_left.lock().unwrap();
+        if *remaining > 0 {
+            *remaining -= 1;
             Err(SentinelError::RpcResponseError {
                 code: 503,
                 message: "unavailable".into(),
@@ -41,7 +37,7 @@ async fn opens_after_threshold_and_fails_fast_until_cooldown() {
     let calls = Arc::new(AtomicUsize::new(0));
     let reader = MockReader {
         calls: calls.clone(),
-        failures_left: AtomicUsize::new(2),
+        failures_left: std::sync::Mutex::new(2),
     };
     let breaker = CircuitBreakerReader::with_config(
         reader,

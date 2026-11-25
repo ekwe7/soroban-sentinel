@@ -11,6 +11,7 @@ fn report(status: RiskLevel) -> TTLReport {
         network: "testnet".into(),
         latest_ledger: 100,
         ledger_velocity_seconds: 5.0,
+        burn_rate: Default::default(),
         entries: vec![StorageEntryReport::new(
             "persistent:ADMIN",
             EntryType::PersistentData,
