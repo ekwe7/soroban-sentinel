@@ -92,6 +92,10 @@ async fn main() {
         Commands::Bump(args) => commands::run_bump(args).await,
         Commands::Network(args) => commands::run_network(args).await,
         Commands::Restore(args) => commands::run_restore(args).await,
+        Commands::Completions(args) => match commands::run_completions(args) {
+            Ok(()) => 0,
+            Err(_) => 10,
+        },
         Commands::InstallService(args) => commands::run_install_service(args),
         Commands::Init(args) => commands::run_init(args),
         Commands::GenerateDocker(args) => commands::run_generate_docker(args),

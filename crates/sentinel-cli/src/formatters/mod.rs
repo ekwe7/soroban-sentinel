@@ -1,6 +1,7 @@
 //! Output formatters for scan reports.
 
 pub mod json;
+pub mod junit;
 pub mod markdown;
 pub mod ndjson;
 #[cfg(feature = "parquet")]
@@ -11,6 +12,7 @@ pub mod tabular;
 pub mod text;
 
 pub use json::{render_json, render_json_with_diff, JsonEntryReport, JsonSummary, JsonTTLReport};
+pub use junit::{render_junit, JUnitReport, JUnitSummary, JUnitTestCase};
 pub use markdown::render_markdown;
 pub use ndjson::{build_ndjson_entries, render_ndjson, NdjsonEntry};
 #[cfg(feature = "parquet")]
