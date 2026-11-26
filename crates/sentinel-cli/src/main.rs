@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 
 use clap::Parser;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter};
+
 use sentinel_cli::args::{Cli, Commands};
 use sentinel_cli::commands;
 use sentinel_cli::telemetry::{self, TelemetryConfig};
@@ -43,7 +47,7 @@ async fn main() {
     }
 
     let cli = match Cli::try_parse() {
-        Ok(c) => c,
+        Ok(cli) => cli,
         Err(err) => {
             if err.use_stderr() {
                 let mut arguments = env::args().skip(1);
@@ -69,6 +73,11 @@ async fn main() {
         }
     };
 
+    let needs_tracer = cli.verbose > 0 || cli.quiet;
+    if needs_tracer {
+        install_tracer(&cli);
+    }
+
     let telemetry = telemetry::init(&TelemetryConfig::resolve(cli.otlp_endpoint.as_deref()));
 
     let exit_code = match cli.command {
@@ -78,25 +87,46 @@ async fn main() {
         Commands::Check(args) => commands::run_check(args).await,
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
         Commands::Scan(args) => commands::run_scan(*args).await,
+        Commands::Benchmark(args) => commands::run_benchmark(args).await,
         Commands::PrunePlan(args) => commands::run_prune_plan(args).await,
         Commands::Bundle(args) => commands::run_bundle(args).await,
+        Commands::LintManifest(args) => {
+            let (code, summary) = commands::lint_manifest(&args.manifest);
+            println!("{}", summary);
+            code
+        }
+        Commands::Schema(args) => commands::schema_command(&args.manifest),
         Commands::AuditKeys(args) => commands::run_audit_keys(args).await,
+        Commands::Budget(args) => commands::run_budget(args).await,
+        Commands::ExportGrafana(args) => {
+            sentinel_cli::commands::export_grafana::run_export_grafana(args)
+        }
         Commands::Bump(args) => commands::run_bump(args).await,
         Commands::Network(args) => commands::run_network(args).await,
         Commands::Restore(args) => commands::run_restore(args).await,
+        Commands::Completions(args) => match commands::run_completions(args) {
+            Ok(()) => 0,
+            Err(_) => 10,
+        },
         Commands::InstallService(args) => commands::run_install_service(args),
         Commands::Init(args) => commands::run_init(args),
         Commands::GenerateDocker(args) => commands::run_generate_docker(args),
         Commands::KeyEncode(args) => commands::run_key_encode(args),
         Commands::KeyDecode(args) => commands::run_key_decode(args),
         Commands::DiffReports(args) => commands::run_diff_reports(args),
+        Commands::ExportKeys(args) => commands::run_export_keys(args),
+        Commands::Explain(args) => commands::run_explain(args),
         Commands::DiffNetworks(args) => commands::run_diff_networks(args).await,
         Commands::KeyDiff(args) => commands::run_key_diff(args),
         Commands::Doctor(args) => commands::doctor::run_doctor(args).await,
         Commands::TraceRoute(args) => commands::trace_route::run_trace_route(args).await,
         Commands::Watch(args) => commands::watch::run_watch(*args).await,
         Commands::Forecast(args) => commands::run_forecast(args).await,
+        Commands::Redact(args) => commands::run_redact(args),
+        Commands::DryRun(args) => commands::run_dry_run(args).await,
         Commands::EstimateGas(args) => commands::run_estimate_gas(args).await,
+        Commands::AuditLimits(args) => commands::run_audit_limits(args).await,
+        Commands::GenerateGithubWorkflow(args) => commands::run_generate_workflow(args),
         Commands::Trend(args) => commands::run_trend(args),
     };
 
@@ -104,4 +134,34 @@ async fn main() {
     // bypasses destructors.
     telemetry.shutdown();
     std::process::exit(exit_code);
+}
+
+fn install_tracer(cli: &Cli) {
+    let level = if cli.quiet {
+        "error"
+    } else {
+        match cli.verbose {
+            0 => "off",
+            1 => "info",
+            _ => "debug",
+        }
+    };
+
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("off"));
+    let registry = tracing_subscriber::registry().with(filter);
+
+    if cli.log_format == "json" {
+        let layer = fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_target(false)
+            .with_ansi(false);
+        let _ = registry.with(layer).try_init();
+    } else {
+        let layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_target(false)
+            .with_ansi(false);
+        let _ = registry.with(layer).try_init();
+    }
 }

@@ -9,8 +9,14 @@ pub enum SentinelError {
     #[error("Invalid XDR key: {0}")]
     InvalidXdrKey(String),
 
+    #[error("Invalid WASM bytecode: {0}")]
+    InvalidWasm(String),
+
     #[error("RPC connection timeout: {0}")]
     RpcConnectionTimeout(String),
+
+    #[error("RPC circuit breaker is open; retry after the reset timeout")]
+    CircuitBreakerOpen,
 
     #[error("RPC response error (code: {code}): {message}")]
     RpcResponseError { code: i64, message: String },
@@ -71,6 +77,9 @@ mod tests {
 
         let err = SentinelError::InvalidXdrKey("bad_xdr".to_string());
         assert_eq!(err.to_string(), "Invalid XDR key: bad_xdr");
+
+        let err = SentinelError::InvalidWasm("bad_module".to_string());
+        assert_eq!(err.to_string(), "Invalid WASM bytecode: bad_module");
 
         let err = SentinelError::RpcConnectionTimeout("https://rpc.example.com".to_string());
         assert_eq!(

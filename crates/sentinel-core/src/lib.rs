@@ -13,6 +13,6 @@ pub mod usecases;
 pub use adapters::*;
 pub use domain::fee_bump;
 pub use domain::*;
-pub use error::*;
+pub use error::{SentinelError, SentinelResult};
 pub use ports::*;
 pub use usecases::*;

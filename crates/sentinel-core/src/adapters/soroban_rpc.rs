@@ -2,10 +2,14 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
-use stellar_xdr::curr::{ReadXdr, SorobanTransactionData};
+use std::time::{Duration, Instant};
+use stellar_xdr::curr::{ReadXdr, ScVal, SorobanTransactionData};
+use tracing::{debug, info};
+
+use crate::adapters::xdr_keys::{parse_contract_id, safe_xdr_limits};
+use crate::domain::events::{ContractEvent, DecodedContractEvent, SorobanEventType};
 
 use crate::domain::burn_rate::{
     calculate_burn_rate, LedgerCloseSample, DEFAULT_SAMPLE_WINDOW_LEDGERS,
@@ -16,10 +20,16 @@ use crate::domain::TARGET_LEDGER_CLOSE_SECONDS;
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
 use crate::ports::simulator::SimulationEngine;
+use crate::ports::EventStreamReader;
 
 /// Maximum number of keys allowed in a single `getLedgerEntries` request by Soroban RPC.
 pub const MAX_KEYS_PER_REQUEST: usize = 200;
 
+/// Maximum number of events requested per `getEvents` page.
+pub const MAX_EVENTS_PER_PAGE: u32 = 100;
+
+/// Safety bound on `getEvents` pagination loops to prevent unbounded reads.
+pub const MAX_EVENT_PAGES: usize = 100;
 /// Maximum number of JSON-RPC calls sent in one HTTP batch.
 pub const MAX_BATCH_REQUESTS: usize = 20;
 
@@ -147,6 +157,85 @@ pub fn validate_rpc_url(url: &str) -> SentinelResult<()> {
         )));
     }
     Ok(())
+}
+
+/// Returns true when a query parameter name or value looks like a secret.
+fn is_likely_secret(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    ["key", "secret", "token", "api"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Returns true when a path segment looks like a Soroban contract/account address.
+fn is_soroban_address(segment: &str) -> bool {
+    segment.len() >= 5 && (segment.starts_with('G') || segment.starts_with('C'))
+}
+
+/// Redacts sensitive information from an RPC URL for safe logging.
+///
+/// - Removes userinfo (`username:password@`)
+/// - Masks query parameter values whose name or value looks like a secret
+/// - Replaces path segments that look like Soroban addresses with `redacted`
+/// - Returns the original string verbatim when nothing needed redaction
+pub fn redact_rpc_url(url: &str) -> String {
+    let mut parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return url.to_string(),
+    };
+
+    let mut redacted = false;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        redacted = true;
+    }
+
+    if parsed.query().is_some() {
+        let pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let mut new_pairs = Vec::with_capacity(pairs.len());
+        for (key, value) in pairs {
+            if is_likely_secret(&key) || is_likely_secret(&value) {
+                new_pairs.push((key, "redacted".to_string()));
+                redacted = true;
+            } else {
+                new_pairs.push((key, value));
+            }
+        }
+        let query = new_pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+        parsed.set_query(Some(&query));
+    }
+
+    let path = parsed.path().to_string();
+    let new_path = path
+        .split('/')
+        .map(|segment| {
+            if is_soroban_address(segment) {
+                redacted = true;
+                "redacted".to_string()
+            } else {
+                segment.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if redacted {
+        parsed.set_path(&new_path);
+    }
+
+    if !redacted {
+        return url.to_string();
+    }
+
+    parsed.to_string()
 }
 
 /// Parses standard HTTP Retry-After delta-seconds. Invalid values or HTTP-date formats return None.
@@ -345,9 +434,11 @@ impl SorobanRpcClient {
         payload: &P,
         retryable: bool,
     ) -> SentinelResult<Vec<u8>> {
+        let redacted_url = redact_rpc_url(&self.rpc_url);
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
+            let started_at = Instant::now();
             match self
                 .http_client
                 .post(&self.rpc_url)
@@ -358,14 +449,29 @@ impl SorobanRpcClient {
             {
                 Ok(response) => {
                     let status = response.status();
+                    info!(
+                        rpc_url = %redacted_url,
+                        attempt = attempt,
+                        http_status = status.as_u16(),
+                        latency_ms = started_at.elapsed().as_millis() as u64,
+                        "rpc_request"
+                    );
+
+                    // Check for rate limiting (429) or transient server unavailability (503)
                     if retryable
                         && (status == reqwest::StatusCode::TOO_MANY_REQUESTS
                             || status == reqwest::StatusCode::SERVICE_UNAVAILABLE)
                         && attempt < self.retry_policy.max_retries
                     {
-                        let backoff = self
-                            .retry_policy
-                            .next_delay(attempt, parse_retry_after(response.headers()));
+                        let retry_after = parse_retry_after(response.headers());
+                        let backoff = self.retry_policy.next_delay(attempt, retry_after);
+                        debug!(
+                            rpc_url = %redacted_url,
+                            attempt = attempt,
+                            http_status = status.as_u16(),
+                            backoff_ms = backoff.as_millis() as u64,
+                            "rpc_retry_scheduled"
+                        );
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
@@ -401,23 +507,40 @@ impl SorobanRpcClient {
                     return Ok(body_bytes);
                 }
                 Err(error) => {
+                    info!(
+                        rpc_url = %redacted_url,
+                        attempt = attempt,
+                        latency_ms = started_at.elapsed().as_millis() as u64,
+                        error = %error,
+                        "rpc_request_failed"
+                    );
+
+                    // Retry on connect errors or timeouts if attempts remain
                     if retryable
                         && (error.is_connect() || error.is_timeout())
                         && attempt < self.retry_policy.max_retries
                     {
-                        tokio::time::sleep(self.retry_policy.next_delay(attempt, None)).await;
+                        let backoff = self.retry_policy.next_delay(attempt, None);
+                        debug!(
+                            rpc_url = %redacted_url,
+                            attempt = attempt,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "rpc_retry_scheduled"
+                        );
+                        tokio::time::sleep(backoff).await;
                         continue;
                     }
                     if error.is_timeout() {
                         return Err(SentinelError::RpcConnectionTimeout(format!(
                             "Timeout connecting to RPC at {}: {}",
-                            self.rpc_url, error
+                            redacted_url, error
+                        )));
+                    } else {
+                        return Err(SentinelError::RpcConnectionTimeout(format!(
+                            "Failed to connect to RPC at {}: {}",
+                            redacted_url, error
                         )));
                     }
-                    return Err(SentinelError::RpcConnectionTimeout(format!(
-                        "Failed to connect to RPC at {}: {}",
-                        self.rpc_url, error
-                    )));
                 }
             }
         }
@@ -659,6 +782,88 @@ fn raw_ledger_entry(item: RpcLedgerEntryItem) -> RawLedgerEntry {
 }
 
 #[async_trait]
+impl EventStreamReader for SorobanRpcClient {
+    async fn get_contract_events(
+        &self,
+        contract_id: &str,
+        start_ledger: u32,
+    ) -> SentinelResult<Vec<ContractEvent>> {
+        let contract_bytes = parse_contract_id(contract_id)?;
+        let canonical_id = stellar_strkey::Contract(contract_bytes).to_string();
+
+        let mut cursor: Option<String> = None;
+        let mut parsed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for _ in 0..MAX_EVENT_PAGES {
+            let params = GetEventsParams {
+                start_ledger,
+                filters: vec![GetEventsFilter {
+                    contract_ids: vec![canonical_id.as_str()],
+                }],
+                pagination: GetEventsPagination {
+                    limit: MAX_EVENTS_PER_PAGE,
+                    cursor: cursor.as_deref(),
+                },
+            };
+
+            let result: GetEventsResult = self.send_rpc_request("getEvents", params).await?;
+            let page_len = result.events.len();
+            let mut last_paging_token = None;
+
+            for item in result.events {
+                if let Some(token) = item.paging_token.clone() {
+                    last_paging_token = Some(token);
+                }
+                if seen.insert(item.id.clone()) {
+                    parsed.push(decode_contract_event(item));
+                }
+            }
+
+            if page_len == 0 {
+                break;
+            }
+
+            let next_cursor = result.cursor.or(last_paging_token);
+            match next_cursor {
+                Some(next) if cursor.as_deref() != Some(next.as_str()) => {
+                    cursor = Some(next);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(parsed)
+    }
+}
+
+fn decode_contract_event(item: RpcContractEventItem) -> ContractEvent {
+    let topics = item
+        .topic
+        .iter()
+        .filter_map(|topic| decode_scval(topic))
+        .collect();
+    let value = item.value.as_deref().and_then(decode_scval);
+
+    ContractEvent::from_decoded(DecodedContractEvent {
+        id: item.id,
+        paging_token: item.paging_token,
+        ledger: item.ledger,
+        ledger_close_time: item.ledger_close_time,
+        event_type: SorobanEventType::from_rpc_str(&item.event_type),
+        contract_id: item.contract_id,
+        topics,
+        value,
+        tx_hash: item.tx_hash,
+        in_successful_contract_call: item.in_successful_contract_call.unwrap_or(false),
+    })
+}
+
+fn decode_scval(base64: &str) -> Option<ScVal> {
+    ScVal::from_xdr_base64(base64, safe_xdr_limits()).ok()
+}
+
+#[async_trait]
 impl SimulationEngine for SorobanRpcClient {
     async fn simulate_transaction(
         &self,
@@ -760,6 +965,61 @@ struct RpcLedgerItem {
     sequence: u32,
     #[serde(deserialize_with = "deserialize_close_time_opt")]
     ledger_close_time: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsParams<'a> {
+    start_ledger: u32,
+    filters: Vec<GetEventsFilter<'a>>,
+    pagination: GetEventsPagination<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsFilter<'a> {
+    contract_ids: Vec<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsPagination<'a> {
+    limit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsResult {
+    #[serde(default)]
+    events: Vec<RpcContractEventItem>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcContractEventItem {
+    #[serde(rename = "type")]
+    event_type: String,
+    ledger: u32,
+    #[serde(default, deserialize_with = "deserialize_close_time_opt")]
+    ledger_close_time: Option<i64>,
+    #[serde(default)]
+    contract_id: Option<String>,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    paging_token: Option<String>,
+    #[serde(default)]
+    topic: Vec<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    tx_hash: Option<String>,
+    #[serde(default)]
+    in_successful_contract_call: Option<bool>,
 }
 
 fn deserialize_close_time_opt<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
@@ -877,6 +1137,37 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn test_redact_rpc_url_userinfo() {
+        let url = "http://user:pass@localhost:8000/soroban/rpc";
+        let redacted = redact_rpc_url(url);
+        assert!(!redacted.contains("user:pass"));
+        assert!(redacted.contains("localhost"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_api_key_query() {
+        let url = "https://rpc.example.com?api_key=sk-12345&other=val";
+        let redacted = redact_rpc_url(url);
+        assert!(redacted.contains("redacted"));
+        assert!(!redacted.contains("sk-12345"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_soroban_address() {
+        let url = "https://rpc.example.com/keys/GABC1234567890abcdefghijklmnopqrstuv";
+        let redacted = redact_rpc_url(url);
+        assert!(redacted.contains("redacted"));
+        assert!(!redacted.contains("GABC1234567890abcdefghijklmnopqrstuv"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_no_secrets() {
+        let url = "https://soroban-testnet.stellar.org";
+        let redacted = redact_rpc_url(url);
+        assert_eq!(redacted, "https://soroban-testnet.stellar.org");
+    }
 
     #[test]
     fn test_parse_latest_ledger_json() {

@@ -1,5 +1,6 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use sentinel_core::domain::DEFAULT_SAMPLE_WINDOW_LEDGERS;
+use serde::{Deserialize, Serialize};
 
 /// Autonomous storage TTL monitoring and expiry-risk detection for Soroban smart contracts.
 #[derive(Parser, Debug)]
@@ -19,6 +20,18 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Enable verbose diagnostics on stderr. Use -v for summary, -vv for detailed (retries/backoff).
+    #[arg(short = 'v', global = true, action = ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Suppress non-error stderr output. Only show errors.
+    #[arg(short = 'q', global = true)]
+    pub quiet: bool,
+
+    /// Output format for diagnostics: "text" (plain text) or "json" (one JSON object per line).
+    #[arg(long = "log-format", global = true, value_parser = ["text", "json"], default_value = "text")]
+    pub log_format: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -31,20 +44,35 @@ pub enum Commands {
     ExportOpenapi(ExportOpenapiArgs),
     /// Score contract health from a fleet manifest
     HealthMatrix(HealthMatrixArgs),
+    /// Benchmark Soroban RPC endpoint performance (latency, throughput, percentiles)
+    Benchmark(BenchmarkArgs),
     /// Rank resolved contract entries by serialized byte size
     TopConsumers(TopConsumersArgs),
     /// Check Soroban RPC connectivity, network identity, and protocol support
     Doctor(DoctorArgs),
+
     /// Measure the connection and response latency of a Soroban RPC endpoint
     TraceRoute(TraceRouteArgs),
     /// Monitor one contract and notify configured incident providers
     Watch(Box<WatchArgs>),
+
+    /// Lint a manifest file and export JSON Schema for IDE autocompletion
+    LintManifest(LintManifestArgs),
+
+    /// Export JSON Schema for IDE autocompletion (VS Code / IntelliJ)
+    Schema(SchemaArgs),
 
     /// Compare the cost of extending contract storage TTL across duration tiers
     CostMatrix(CostMatrixArgs),
 
     /// Bundle contract and persistent-key TTL extensions into simulated transactions
     Bundle(BundleArgs),
+
+    /// Estimate rent reserve requirements for a contract storage horizon
+    Budget(BudgetArgs),
+
+    /// Export Grafana dashboard and Prometheus alerting definitions
+    ExportGrafana(ExportGrafanaArgs),
 
     /// Build, sign, and optionally submit a TTL extension transaction
     Bump(BumpArgs),
@@ -57,9 +85,12 @@ pub enum Commands {
 
     /// Audit contract storage placement, entry sizes, and cost-saving opportunities
     AuditKeys(AuditKeysArgs),
+
     /// Generate a systemd or launchd service definition for autonomous watching
     InstallService(InstallServiceArgs),
 
+    /// Generate shell completion scripts for the `sentinel` CLI
+    Completions(CompletionsArgs),
     /// Generate a sentinel.toml fleet manifest
     Init(InitArgs),
 
@@ -75,6 +106,12 @@ pub enum Commands {
     /// Compare two saved JSON TTL reports without using RPC
     DiffReports(DiffReportsArgs),
 
+    /// Export the monitored keys in a saved JSON TTL report as sentinel.toml or JSON
+    ExportKeys(ExportKeysArgs),
+
+    /// Decode a base64 LedgerEntry, LedgerEntryData, or LedgerKey XDR value
+    Explain(ExplainArgs),
+
     /// Compare a contract's storage health across two Stellar networks
     DiffNetworks(DiffNetworksArgs),
 
@@ -86,9 +123,18 @@ pub enum Commands {
 
     /// Display network state-archival and contract entry limits
     Network(NetworkArgs),
+    /// Remove sensitive storage keys and payloads from a saved scan report
+    Redact(RedactArgs),
+    /// Validate contract and key arguments, then check RPC health
+    DryRun(DryRunArgs),
     /// Estimate a contract TTL extension's resource limits
     EstimateGas(EstimateGasArgs),
 
+    /// Verify contract storage compliance against Stellar protocol ceilings
+    AuditLimits(AuditLimitsArgs),
+
+    /// Scaffold an automated GitHub Actions CI workflow for TTL drift scanning
+    GenerateGithubWorkflow(GenerateWorkflowArgs),
     /// Analyze historical scan snapshots to project TTL decay and threshold crossings
     Trend(TrendArgs),
 }
@@ -124,6 +170,37 @@ pub struct DoctorArgs {
     pub no_color: bool,
 }
 
+#[derive(Args, Clone)]
+pub struct RedactArgs {
+    #[arg(long, value_name = "SCAN_REPORT.json")]
+    pub input: std::path::PathBuf,
+    #[arg(long, value_name = "REDACTED.json")]
+    pub output: Option<std::path::PathBuf>,
+    /// Secret key for stable HMAC pseudonyms across reports
+    #[arg(long, hide_env_values = true, env = "SENTINEL_REDACT_SALT")]
+    pub salt: Option<String>,
+}
+
+impl std::fmt::Debug for RedactArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedactArgs")
+            .field("input", &self.input)
+            .field("output", &self.output)
+            .field("salt", &self.salt.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DryRunArgs {
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct EstimateGasArgs {
     #[arg(value_name = "CONTRACT_ID")]
@@ -144,14 +221,46 @@ pub struct EstimateGasArgs {
     pub format: String,
 }
 
+/// Format for watch command output updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 // Avoid Debug implementations that print provider credentials.
 #[derive(Args)]
+#[command(
+    after_help = "The first scan prints a full report; later scans print only state transitions (status changes, entries appearing or disappearing, TTL bumps) or a heartbeat line. Ctrl-C or SIGTERM stops the watch and exits with the last scan's risk code (0 OK, 1 warning, 2 critical or archived). Invalid input exits 10; reaching --max-consecutive-failures exits 11."
+)]
 pub struct WatchArgs {
     #[command(flatten)]
     pub scan: ScanArgs,
     /// Seconds between scans
-    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = 60, value_name = "SECS")]
     pub interval: u64,
+    /// Maximum number of iterations before exiting (useful for testing and CI)
+    #[arg(long, value_name = "N")]
+    pub max_iterations: Option<u64>,
+    /// Maximum number of consecutive RPC/network failures before exiting
+    #[arg(long, default_value_t = 5, value_name = "N")]
+    pub max_consecutive_failures: u32,
+    /// Matrix homeserver URL for room alerts
+    #[arg(long = "alert-matrix-homeserver", value_name = "URL")]
+    pub alert_matrix_homeserver: Option<String>,
+    /// Matrix room ID for room alerts
+    #[arg(long = "alert-matrix-room", value_name = "ROOM_ID")]
+    pub alert_matrix_room: Option<String>,
+    /// Matrix access token for room alerts
+    #[arg(
+        long = "alert-matrix-token",
+        env = "SENTINEL_ALERT_MATRIX_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub alert_matrix_token: Option<String>,
     #[arg(long, env = "PAGERDUTY_ROUTING_KEY", hide_env_values = true)]
     pub pagerduty_routing_key: Option<String>,
     #[arg(long, env = "OPSGENIE_API_KEY", hide_env_values = true)]
@@ -193,6 +302,13 @@ pub struct WatchArgs {
     #[arg(long, default_value = "datadoghq.com", value_name = "SITE",
           value_parser = ["datadoghq.com", "datadoghq.eu"])]
     pub datadog_site: String,
+    /// Google Chat incoming webhook URL for risk alerts
+    #[arg(
+        long = "alert-google-chat",
+        value_name = "WEBHOOK_URL",
+        hide_env_values = true
+    )]
+    pub alert_google_chat: Option<String>,
     /// Microsoft Teams incoming webhook URL for Adaptive Card alerts
     #[arg(
         long = "alert-teams",
@@ -201,6 +317,57 @@ pub struct WatchArgs {
         value_name = "WEBHOOK_URL"
     )]
     pub alert_teams: Option<String>,
+    /// SMTP server address for email notifications
+    #[arg(
+        long = "smtp-server",
+        value_name = "HOST",
+        env = "SENTINEL_SMTP_SERVER"
+    )]
+    pub smtp_server: Option<String>,
+    /// SMTP port for email notifications (default: 587)
+    #[arg(long = "smtp-port", default_value_t = 587, value_name = "PORT")]
+    pub smtp_port: u16,
+    /// SMTP username for email notifications
+    #[arg(
+        long = "smtp-username",
+        value_name = "USER",
+        env = "SENTINEL_SMTP_USERNAME"
+    )]
+    pub smtp_username: Option<String>,
+    /// SMTP password for email notifications
+    #[arg(
+        long = "smtp-password",
+        value_name = "PASS",
+        env = "SENTINEL_SMTP_PASSWORD"
+    )]
+    pub smtp_password: Option<String>,
+    /// Recipient email addresses (specify multiple times for multiple recipients)
+    #[arg(
+        long = "smtp-recipient",
+        value_name = "EMAIL",
+        env = "SENTINEL_SMTP_RECIPIENT"
+    )]
+    pub smtp_recipients: Vec<String>,
+    /// Use STARTTLS for SMTP (connect without TLS then upgrade)
+    #[arg(long = "smtp-starttls")]
+    pub smtp_starttls: bool,
+    /// Webhook secret for HMAC-SHA256 signature computation
+    #[arg(
+        long = "webhook-secret",
+        value_name = "SECRET",
+        env = "SENTINEL_WEBHOOK_SECRET"
+    )]
+    pub webhook_secret: Option<String>,
+    /// Webhook token for bearer token authorization
+    #[arg(
+        long = "webhook-token",
+        value_name = "TOKEN",
+        env = "SENTINEL_WEBHOOK_TOKEN"
+    )]
+    pub webhook_token: Option<String>,
+    /// Webhook URL for alert notifications
+    #[arg(long = "webhook-url", value_name = "URL", env = "SENTINEL_WEBHOOK_URL")]
+    pub webhook_url: Option<String>,
 }
 
 impl std::fmt::Debug for WatchArgs {
@@ -320,6 +487,38 @@ pub struct DiffReportsArgs {
     pub fail_on_regression: bool,
 }
 
+/// Command-line arguments for `sentinel export-keys`.
+#[derive(Args, Debug, Clone)]
+pub struct ExportKeysArgs {
+    /// Saved JSON TTL report (from `sentinel scan --format json`)
+    #[arg(long, value_name = "REPORT_JSON")]
+    pub input: std::path::PathBuf,
+
+    /// Output format
+    #[arg(long, default_value = "toml", value_parser = ["toml", "json"])]
+    pub format: String,
+}
+
+/// Command-line arguments for `sentinel explain`.
+#[derive(Args, Debug, Clone)]
+pub struct ExplainArgs {
+    /// Base64 XDR for a LedgerEntry, LedgerEntryData, or LedgerKey
+    #[arg(
+        value_name = "BASE64_XDR",
+        required_unless_present = "stdin",
+        conflicts_with = "stdin"
+    )]
+    pub xdr: Option<String>,
+
+    /// Read the base64 XDR from standard input
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Output format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+}
+
 /// Arguments for `sentinel key-diff`.
 #[derive(Args, Debug, Clone)]
 pub struct KeyDiffArgs {
@@ -385,25 +584,38 @@ pub struct DiffNetworksArgs {
     pub format: String,
 }
 
-/// Command-line arguments for the `sentinel scan` command.
+/// Output format for `sentinel scan` results.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Colorized ASCII table
+    Text,
+    /// Machine-readable JSON
+    Json,
+    /// SARIF v2.1.0 for GitHub Code Scanning
+    Sarif,
+    /// GitHub-flavoured Markdown for PR and issue comments
+    Markdown,
+    /// Prometheus text exposition format for the node_exporter textfile collector
+    Prometheus,
+}
+
+/// Contract, network, key and threshold flags shared by `sentinel scan` and `sentinel watch`.
+/// Contract, network, key and threshold flags for `sentinel scan`.
 #[derive(Args, Debug, Clone)]
 pub struct ScanArgs {
     /// Target Soroban smart contract address (C... Strkey format) or a contract alias
     #[arg(value_name = "CONTRACT_ID")]
     pub contract_id: String,
 
-    /// Custom Soroban RPC endpoint URL (overrides default network endpoint)
+    /// Custom Soroban RPC endpoint URL
     #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
     pub rpc_url: Option<String>,
 
-    /// Target Stellar network: "testnet", "mainnet", "futurenet", or "local"
+    /// Target Stellar network
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results: text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, or html (self-contained HTML5 report)
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), or "html" (self-contained HTML5 report)
-    /// Output format for scan results: text, json, csv, parquet, sarif, markdown, or pushgateway
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), or "markdown"
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), "html" (self-contained HTML5 report), "prometheus", "pushgateway", or "sonarqube" (SonarQube Generic Issues)
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
@@ -419,31 +631,59 @@ pub struct ScanArgs {
     #[arg(long = "key", value_name = "SYMBOL")]
     pub key: Vec<String>,
 
-    /// Persistent storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
+    /// Persistent storage key encoded as raw base64 ScVal XDR (repeatable)
     #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
     pub key_xdr: Vec<String>,
 
-    /// Persistent storage key encoded as typed expression (can be specified multiple times, e.g. "sym:Balance", "vec[sym:Balance, addr:G...]")
+    /// Persistent storage key encoded as typed expression (repeatable)
     #[arg(long = "key-expr", value_name = "EXPR")]
     pub key_expr: Vec<String>,
+
+    /// Temporary storage key symbol to inspect (can be specified multiple times). Expired temporary entries are deleted permanently.
+    #[arg(long = "temp-key", value_name = "SYMBOL")]
+    pub temp_key: Vec<String>,
+
+    /// Temporary storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
+    #[arg(long = "temp-key-xdr", value_name = "BASE64_XDR")]
+    pub temp_key_xdr: Vec<String>,
 
     /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
     #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
     pub threshold: u32,
 
-    /// Critical threshold in ledgers below which entries trigger CRITICAL status (defaults to 34,560 ledgers ≈ 2 days, or threshold / 3 if threshold <= 34,560)
+    /// Critical threshold in ledgers
     #[arg(long, value_name = "LEDGERS")]
     pub critical_threshold: Option<u32>,
 
-    /// Custom RPC request timeout in seconds (1–120, defaults to 10)
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises WARN
+    #[arg(
+        long = "instance-size-warn-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_WARN_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_warn_pct: u8,
+
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises CRITICAL
+    #[arg(
+        long = "instance-size-critical-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_CRITICAL_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_critical_pct: u8,
+
+    /// Return a nonzero exit code for entries at or above this risk level
+    #[arg(long = "fail-on-risk", value_parser = ["critical"])]
+    pub fail_on_risk: Option<String>,
+
+    /// Custom RPC request timeout in seconds (1 to 120, defaults to 10)
     #[arg(long = "rpc-timeout", value_name = "SECS")]
     pub rpc_timeout: Option<u64>,
 
-    /// Maximum RPC retry attempts for transient errors (0–10, defaults to 3)
+    /// Maximum RPC retry attempts for transient errors (0 to 10, defaults to 3)
     #[arg(long = "rpc-max-retries", value_name = "N")]
     pub rpc_max_retries: Option<u32>,
 
-    /// Override ledger close velocity in seconds per ledger (1.0–60.0)
+    /// Override ledger close velocity in seconds per ledger (1.0 to 60.0)
     #[arg(long = "ledger-seconds", value_name = "SECS")]
     pub ledger_seconds: Option<f64>,
 
@@ -459,7 +699,7 @@ pub struct ScanArgs {
     #[arg(long = "baseline", value_name = "PATH")]
     pub baseline: Option<String>,
 
-    /// Return exit code 2 if any entry regressed in risk status or was removed compared to baseline
+    /// Return exit code 2 if any entry regressed compared to baseline
     #[arg(long = "fail-on-regression")]
     pub fail_on_regression: bool,
 
@@ -492,6 +732,42 @@ pub struct ScanArgs {
     /// Target maintenance horizon in days used by recommendations.
     #[arg(long, default_value_t = 30, value_name = "DAYS")]
     pub target_days: u32,
+}
+
+/// Command-line arguments for the `sentinel lint-manifest` command.
+#[derive(Args, Debug, Clone)]
+pub struct LintManifestArgs {
+    /// Path to the manifest JSON file to validate and generate schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
+}
+
+/// Command-line arguments for the `sentinel schema` command.
+#[derive(Args, Debug, Clone)]
+pub struct SchemaArgs {
+    /// Path to the manifest JSON file to generate JSON Schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
+}
+
+/// Command-line arguments for the `sentinel benchmark-rpc` command.
+#[derive(Args, Debug, Clone)]
+pub struct BenchmarkArgs {
+    /// Required RPC endpoint URL (e.g. https://soroban-testnet.stellar.org)
+    #[arg(value_name = "URL")]
+    pub rpc_url: String,
+
+    /// Number of concurrent requests to issue during benchmark (default: 1)
+    #[arg(long = "concurrency", default_value = "1", value_name = "N")]
+    pub concurrency: usize,
+
+    /// Benchmark duration in seconds (default: 30s)
+    #[arg(long = "duration-secs", default_value = "30", value_name = "SECS")]
+    pub duration_secs: u64,
+
+    /// Output format for benchmark results: "text" (human-readable table) or "json" (machine-readable)
+    #[arg(long = "format", default_value = "text", value_name = "FORMAT")]
+    pub format: String,
 }
 
 /// Command-line arguments for `sentinel prune-plan`.
@@ -601,11 +877,19 @@ pub struct CostMatrixArgs {
 /// Command-line arguments for the `sentinel bundle` command.
 #[derive(Args, Debug, Clone)]
 pub struct BundleArgs {
-    /// Contract addresses to include (can be specified multiple times)
-    #[arg(long = "contract", value_name = "CONTRACT_ID")]
+    /// Contract address to include (repeatable; --key values apply to each)
+    #[arg(
+        long = "contract",
+        value_name = "CONTRACT_ID",
+        required_unless_present = "manifest"
+    )]
     pub contracts: Vec<String>,
 
-    /// Persistent storage key symbol applied to each contract
+    /// JSON manifest containing contracts and their optional persistent symbol keys
+    #[arg(long, value_name = "PATH", conflicts_with = "contracts")]
+    pub manifest: Option<std::path::PathBuf>,
+
+    /// Persistent storage symbol key to include for every selected contract
     #[arg(long = "key", value_name = "SYMBOL")]
     pub keys: Vec<String>,
 
@@ -613,21 +897,13 @@ pub struct BundleArgs {
     #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
     pub key_xdr: Vec<String>,
 
-    /// JSON bundle manifest path
-    #[arg(long, value_name = "PATH")]
-    pub manifest: Option<std::path::PathBuf>,
-
-    /// Source Stellar account that will sign the transaction
-    #[arg(long, value_name = "G...")]
+    /// Stellar account that will be the unsigned transaction source
+    #[arg(long = "source-account", value_name = "G...")]
     pub source_account: String,
 
-    /// Ledger TTL extension length
-    #[arg(long, value_name = "LEDGERS")]
+    /// Extend entries to this many ledgers beyond the current ledger
+    #[arg(long = "extend-by", value_name = "LEDGERS")]
     pub extend_by: u32,
-
-    /// Base transaction fee in stroops
-    #[arg(long, default_value_t = 100, value_name = "STROOPS")]
-    pub base_fee: u32,
 
     /// Target Stellar network
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
@@ -636,6 +912,70 @@ pub struct BundleArgs {
     /// Custom Soroban RPC endpoint URL
     #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
     pub rpc_url: Option<String>,
+
+    /// Inclusion fee per operation in stroops
+    #[arg(long = "base-fee", default_value_t = 100, value_name = "STROOPS")]
+    pub base_fee: u32,
+}
+
+/// Command-line arguments for the `sentinel budget` command.
+#[derive(Args, Debug, Clone)]
+pub struct BudgetArgs {
+    /// Target Soroban smart contract address
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Target storage horizon in days
+    #[arg(long, default_value_t = 30, value_name = "DAYS")]
+    pub horizon_days: u32,
+
+    /// Network rent rate in stroops per byte per ledger
+    #[arg(long, value_name = "STROOPS_PER_BYTE_LEDGER")]
+    pub fee_rate_stroops_per_byte_ledger: u64,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Persistent storage key symbol to include (repeatable)
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub persistent_keys: Vec<String>,
+
+    /// Persistent storage key encoded as base64 ScVal XDR (repeatable)
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub persistent_key_xdr: Vec<String>,
+
+    /// Persistent storage key encoded as a typed expression (repeatable)
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub persistent_key_exprs: Vec<String>,
+
+    /// Temporary storage key symbol to include (repeatable)
+    #[arg(long = "temporary-key", value_name = "SYMBOL")]
+    pub temporary_keys: Vec<String>,
+
+    /// Temporary storage key encoded as base64 ScVal XDR (repeatable)
+    #[arg(long = "temporary-key-xdr", value_name = "BASE64_XDR")]
+    pub temporary_key_xdr: Vec<String>,
+
+    /// Temporary storage key encoded as a typed expression (repeatable)
+    #[arg(long = "temporary-key-expr", value_name = "EXPR")]
+    pub temporary_key_exprs: Vec<String>,
+}
+
+/// Command-line arguments for the `sentinel export-grafana` command.
+#[derive(Args, Debug, Clone)]
+pub struct ExportGrafanaArgs {
+    /// Directory where dashboard and alert rule files are written
+    #[arg(long, default_value = ".", value_name = "DIR")]
+    pub output_dir: std::path::PathBuf,
 }
 
 /// Command-line arguments for the `sentinel restore` command.
@@ -815,11 +1155,11 @@ pub struct BumpArgs {
     #[arg(long, value_name = "G...")]
     pub source_account: String,
 
-    /// Maximum total fee; required for submission.
+    /// Maximum simulated transaction fee allowed when submitting.
     #[arg(long, value_name = "STROOPS")]
     pub max_fee: Option<u64>,
 
-    /// Submit the signed transaction instead of dry-run only.
+    /// Submit the signed transaction instead of only printing it.
     #[arg(long)]
     pub submit: bool,
 
@@ -864,7 +1204,100 @@ pub struct InstallServiceArgs {
     #[arg(long, value_name = "DIR")]
     pub output_dir: Option<std::path::PathBuf>,
 }
+/// Shell type for completion script generation.
+#[derive(clap::Parser, Debug, Clone, Copy)]
+pub enum Shell {
+    /// Bash completion script
+    Bash,
+    /// Zsh completion script
+    Zsh,
+    /// Fish completion script
+    Fish,
+    /// PowerShell completion script
+    PowerShell,
+    /// Elvish completion script
+    Elvish,
+}
 
+impl std::fmt::Display for Shell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shell::Bash => write!(f, "bash"),
+            Shell::Zsh => write!(f, "zsh"),
+            Shell::Fish => write!(f, "fish"),
+            Shell::PowerShell => write!(f, "powershell"),
+            Shell::Elvish => write!(f, "elvish"),
+        }
+    }
+}
+
+/// Command-line arguments for the `sentinel completions` command.
+#[derive(Args, Debug, Clone)]
+pub struct CompletionsArgs {
+    /// Target shell to generate completions for
+    #[arg(value_name = "SHELL")]
+    pub shell: String,
+}
+
+/// Command-line arguments for `sentinel audit-limits`.
+#[derive(Args, Debug, Clone)]
+pub struct AuditLimitsArgs {
+    /// Contract address (C...)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Network name (testnet, mainnet, futurenet, local)
+    #[arg(long, default_value = "testnet")]
+    pub network: String,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Timeout in seconds for RPC requests (1-120)
+    #[arg(long, value_name = "SECONDS")]
+    pub rpc_timeout: Option<u64>,
+
+    /// Maximum retry attempts for transient RPC errors (0-10)
+    #[arg(long, value_name = "COUNT")]
+    pub rpc_max_retries: Option<u32>,
+
+    /// Output format (table, json, text)
+    #[arg(long, default_value = "table", value_parser = ["table", "json", "text"])]
+    pub format: String,
+
+    /// Additional persistent symbol keys to inspect
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Additional persistent base64 XDR keys to inspect
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Additional persistent key expressions to inspect
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+}
+
+/// Command-line arguments for `sentinel generate-github-workflow`.
+#[derive(Args, Debug, Clone)]
+pub struct GenerateWorkflowArgs {
+    /// Output directory for scaffolding workflow (defaults to ".")
+    #[arg(long = "out-dir", default_value = ".", value_name = "PATH")]
+    pub out_dir: std::path::PathBuf,
+
+    /// Cron schedule expression for automated drift scans (defaults to daily "0 0 * * *")
+    #[arg(long, default_value = "0 0 * * *", value_name = "EXPR")]
+    pub cron: String,
+
+    /// Overwrite existing workflow file
+    #[arg(long)]
+    pub force: bool,
+
+    /// Target network to audit in CI
+    #[arg(long, default_value = "mainnet", value_name = "NETWORK")]
+    pub network: String,
+}
 /// Command-line arguments for `sentinel trend`.
 #[derive(Args, Debug, Clone)]
 pub struct TrendArgs {
@@ -894,12 +1327,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_watch_args() {
+        let args = Cli::parse_from([
+            "sentinel",
+            "watch",
+            "CABC",
+            "--key",
+            "COUNTER",
+            "--temp-key",
+            "NONCE",
+            "--interval",
+            "30",
+            "--max-iterations",
+            "3",
+            "--max-consecutive-failures",
+            "2",
+            "--format",
+            "json",
+        ]);
+        let Commands::Watch(watch) = args.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.scan.contract_id, "CABC");
+        assert_eq!(watch.scan.key, vec!["COUNTER"]);
+        assert_eq!(watch.scan.temp_key, vec!["NONCE"]);
+        assert_eq!(watch.interval, 30);
+        assert_eq!(watch.max_iterations, Some(3));
+        assert_eq!(watch.max_consecutive_failures, 2);
+        assert_eq!(watch.scan.format, "json");
+
+        let defaults = Cli::parse_from(["sentinel", "watch", "CABC"]);
+        let Commands::Watch(watch) = defaults.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.interval, 60);
+        assert_eq!(watch.max_iterations, None);
+        assert_eq!(watch.max_consecutive_failures, 5);
+        assert_eq!(watch.scan.format, "text");
+    }
+
+    #[test]
+    fn test_parse_scan_format_values() {
+        for (raw, expected) in [
+            ("text", OutputFormat::Text),
+            ("json", OutputFormat::Json),
+            ("sarif", OutputFormat::Sarif),
+            ("markdown", OutputFormat::Markdown),
+            ("prometheus", OutputFormat::Prometheus),
+            ("JSON", OutputFormat::Json),
+        ] {
+            let args = Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", raw]).unwrap();
+            let Commands::Scan(scan) = args.command else {
+                panic!("expected scan command");
+            };
+            assert_eq!(
+                scan.format.to_lowercase(),
+                format!("{expected:?}").to_lowercase(),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_scan_defaults() {
         let args = Cli::parse_from([
             "sentinel",
             "scan",
             "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
         ]);
+
         assert!(args.otlp_endpoint.is_none());
         match args.command {
             Commands::Scan(scan) => {
@@ -916,11 +1412,16 @@ mod tests {
                 assert!(scan.key.is_empty());
                 assert!(scan.key_xdr.is_empty());
                 assert!(scan.key_expr.is_empty());
+                assert!(scan.temp_key.is_empty());
+                assert!(scan.temp_key_xdr.is_empty());
+                assert_eq!(scan.instance_size_warn_pct, 75);
+                assert_eq!(scan.instance_size_critical_pct, 90);
                 assert!(scan.rpc_timeout.is_none());
                 assert!(scan.rpc_max_retries.is_none());
                 assert!(scan.ledger_seconds.is_none());
                 assert_eq!(scan.sample_window, DEFAULT_SAMPLE_WINDOW_LEDGERS);
                 assert!(scan.baseline.is_none());
+                assert!(scan.fail_on_risk.is_none());
                 assert!(!scan.fail_on_regression);
                 assert!(!scan.tui);
                 assert!(scan.snapshot.is_none());
@@ -956,6 +1457,12 @@ mod tests {
             "sym:Balance",
             "--key-expr",
             "vec[sym:Data, u32:1]",
+            "--temp-key",
+            "NONCE",
+            "--temp-key",
+            "SESSION",
+            "--temp-key-xdr",
+            "AAAAAw==",
             "--rpc-timeout",
             "30",
             "--rpc-max-retries",
@@ -966,6 +1473,8 @@ mod tests {
             "250",
             "--baseline",
             "baseline.json",
+            "--fail-on-risk",
+            "critical",
             "--fail-on-regression",
             "--tui",
             "--otlp-endpoint",
@@ -991,16 +1500,52 @@ mod tests {
                 assert_eq!(scan.key, vec!["COUNTER", "ADMIN"]);
                 assert_eq!(scan.key_xdr, vec!["AAAAFA=="]);
                 assert_eq!(scan.key_expr, vec!["sym:Balance", "vec[sym:Data, u32:1]"]);
+                assert_eq!(scan.temp_key, vec!["NONCE", "SESSION"]);
+                assert_eq!(scan.temp_key_xdr, vec!["AAAAAw=="]);
                 assert_eq!(scan.rpc_timeout, Some(30));
                 assert_eq!(scan.rpc_max_retries, Some(5));
                 assert_eq!(scan.ledger_seconds, Some(5.5));
                 assert_eq!(scan.sample_window, 250);
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
+                assert_eq!(scan.fail_on_risk.as_deref(), Some("critical"));
                 assert!(scan.fail_on_regression);
                 assert!(scan.tui);
                 assert!(scan.snapshot.is_none());
             }
             _ => panic!("expected scan command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bundle_arguments() {
+        let args = Cli::parse_from([
+            "sentinel",
+            "bundle",
+            "--contract",
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "--contract",
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "--key",
+            "ADMIN",
+            "--key",
+            "COUNTER",
+            "--source-account",
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            "--extend-by",
+            "100000",
+            "--base-fee",
+            "200",
+        ]);
+
+        match args.command {
+            Commands::Bundle(bundle) => {
+                assert_eq!(bundle.contracts.len(), 2);
+                assert_eq!(bundle.keys, vec!["ADMIN", "COUNTER"]);
+                assert_eq!(bundle.extend_by, 100000);
+                assert_eq!(bundle.base_fee, 200);
+                assert_eq!(bundle.network, "testnet");
+            }
+            _ => panic!("expected bundle command"),
         }
     }
 
@@ -1052,6 +1597,90 @@ mod tests {
                 assert_eq!(restore.format, "json");
             }
             _ => panic!("expected restore command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_audit_limits_defaults_and_custom() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+        let defaults = Cli::parse_from(["sentinel", "audit-limits", contract]);
+        match defaults.command {
+            Commands::AuditLimits(limits) => {
+                assert_eq!(limits.contract_id, contract);
+                assert_eq!(limits.network, "testnet");
+                assert_eq!(limits.format, "table");
+                assert!(limits.key.is_empty());
+                assert!(limits.rpc_url.is_none());
+            }
+            _ => panic!("expected audit-limits command"),
+        }
+
+        let custom = Cli::parse_from([
+            "sentinel",
+            "audit-limits",
+            contract,
+            "--network",
+            "mainnet",
+            "--format",
+            "json",
+            "--key",
+            "BALANCE",
+            "--key-xdr",
+            "AAAAFA==",
+            "--key-expr",
+            "sym:Data",
+            "--rpc-timeout",
+            "20",
+            "--rpc-max-retries",
+            "3",
+        ]);
+        match custom.command {
+            Commands::AuditLimits(limits) => {
+                assert_eq!(limits.contract_id, contract);
+                assert_eq!(limits.network, "mainnet");
+                assert_eq!(limits.format, "json");
+                assert_eq!(limits.key, vec!["BALANCE"]);
+                assert_eq!(limits.key_xdr, vec!["AAAAFA=="]);
+                assert_eq!(limits.key_expr, vec!["sym:Data"]);
+                assert_eq!(limits.rpc_timeout, Some(20));
+                assert_eq!(limits.rpc_max_retries, Some(3));
+            }
+            _ => panic!("expected audit-limits command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generate_workflow_defaults_and_custom() {
+        let defaults = Cli::parse_from(["sentinel", "generate-github-workflow"]);
+        match defaults.command {
+            Commands::GenerateGithubWorkflow(gen) => {
+                assert_eq!(gen.out_dir, std::path::PathBuf::from("."));
+                assert_eq!(gen.cron, "0 0 * * *");
+                assert_eq!(gen.network, "mainnet");
+                assert!(!gen.force);
+            }
+            _ => panic!("expected generate-github-workflow command"),
+        }
+
+        let custom = Cli::parse_from([
+            "sentinel",
+            "generate-github-workflow",
+            "--out-dir",
+            "custom/dir",
+            "--cron",
+            "0 12 * * *",
+            "--network",
+            "testnet",
+            "--force",
+        ]);
+        match custom.command {
+            Commands::GenerateGithubWorkflow(gen) => {
+                assert_eq!(gen.out_dir, std::path::PathBuf::from("custom/dir"));
+                assert_eq!(gen.cron, "0 12 * * *");
+                assert_eq!(gen.network, "testnet");
+                assert!(gen.force);
+            }
+            _ => panic!("expected generate-github-workflow command"),
         }
     }
 

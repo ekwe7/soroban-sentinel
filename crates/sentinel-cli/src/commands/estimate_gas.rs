@@ -272,6 +272,7 @@ fn entry_type_name(value: EntryType) -> &'static str {
         EntryType::ContractInstance => "contract_instance",
         EntryType::ContractCode => "contract_code",
         EntryType::PersistentData => "contract_data",
+        EntryType::TemporaryData => "temporary_data",
     }
 }
 

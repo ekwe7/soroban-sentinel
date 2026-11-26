@@ -11,8 +11,8 @@ use std::time::Duration;
 use sentinel_core::adapters::{validate_rpc_url, SorobanRpcClient};
 use sentinel_core::domain::compare::{compare_reports, BaselineSnapshot, MAX_BASELINE_FILE_BYTES};
 use sentinel_core::domain::{
-    build_recommendation_plan, shell_quote, validate_sample_window, RecommendationAction,
-    RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
+    build_recommendation_plan, shell_quote, validate_sample_window, InstanceSizeThresholds,
+    RecommendationAction, RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
 };
 use sentinel_core::error::SentinelError;
 use sentinel_core::usecases::{fetch_network_limits, ScanContractUseCase, ScanRequest, TTLReport};
@@ -23,7 +23,8 @@ use crate::args::ScanArgs;
 use crate::formatters::render_parquet;
 use crate::formatters::{
     render_csv, render_html, render_json_with_diff, render_markdown, render_ndjson,
-    render_pushgateway, render_sarif, render_text_with_diff_and_options,
+    render_prometheus, render_pushgateway, render_sarif, render_sonarqube,
+    render_text_with_diff_and_options,
 };
 
 /// Exit code: All evaluated storage entries have status OK.
@@ -36,6 +37,27 @@ pub const EXIT_CRITICAL_OR_ARCHIVED: i32 = 2;
 pub const EXIT_INVALID_ARGS: i32 = 10;
 /// Exit code: RPC communication, timeout, or network failure.
 pub const EXIT_RPC_FAILURE: i32 = 11;
+
+fn resolve_scan_exit_code(
+    status: RiskLevel,
+    fail_on_risk: bool,
+    fail_on_regression: bool,
+    diff_has_regression: bool,
+) -> i32 {
+    if fail_on_risk {
+        if matches!(status, RiskLevel::Critical | RiskLevel::Archived)
+            || (fail_on_regression && diff_has_regression)
+        {
+            EXIT_CRITICAL_OR_ARCHIVED
+        } else {
+            EXIT_OK
+        }
+    } else if fail_on_regression && diff_has_regression {
+        EXIT_CRITICAL_OR_ARCHIVED
+    } else {
+        exit_code_for_status(status)
+    }
+}
 
 /// Resolves the appropriate RPC endpoint URL from network preset or command override.
 pub fn resolve_rpc_url(network: &str, rpc_url_override: Option<&str>) -> Result<String, String> {
@@ -133,6 +155,51 @@ pub fn load_and_validate_baseline(
     Ok(snapshot)
 }
 
+/// The stderr note for a report whose instance-storage utilisation could not be computed because
+/// the network entry-size limit was unavailable, if that applies.
+pub(crate) fn entry_size_limit_note(report: &TTLReport) -> Option<&'static str> {
+    report
+        .entries
+        .iter()
+        .any(|entry| {
+            entry
+                .instance_storage
+                .as_ref()
+                .is_some_and(|metrics| metrics.max_entry_size_bytes.is_none())
+        })
+        .then_some(
+            "Note: the network max_contract_data_entry_bytes limit could not be fetched; instance storage utilisation is omitted.",
+        )
+}
+
+/// Maps a scan error to its exit code: invalid input (`10`) or RPC failure (`11`).
+pub(crate) fn exit_code_for_error(err: &SentinelError) -> i32 {
+    if is_rpc_failure(err) {
+        EXIT_RPC_FAILURE
+    } else {
+        EXIT_INVALID_ARGS
+    }
+}
+
+/// Whether a scan error is a (possibly transient) RPC failure rather than invalid input.
+pub(crate) fn is_rpc_failure(err: &SentinelError) -> bool {
+    matches!(
+        err,
+        SentinelError::RpcConnectionTimeout(_)
+            | SentinelError::RpcResponseError { .. }
+            | SentinelError::SerializationError(_)
+    )
+}
+
+/// Maps an overall risk status to its exit code (`0`, `1` or `2`).
+pub(crate) fn exit_code_for_status(status: RiskLevel) -> i32 {
+    match status {
+        RiskLevel::Ok => EXIT_OK,
+        RiskLevel::Warn => EXIT_WARN,
+        RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
+    }
+}
+
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
 pub(super) fn prepare_scan(
     args: &ScanArgs,
@@ -163,6 +230,12 @@ pub(super) fn prepare_scan(
     }
     let url = resolve_rpc_url(&args.network, args.rpc_url.as_deref())?;
     let thresholds = resolve_threshold_config(args.threshold, args.critical_threshold)?;
+    let instance_size_thresholds = InstanceSizeThresholds::try_new(
+        args.instance_size_warn_pct,
+        args.instance_size_critical_pct,
+    )
+    .map_err(|e| e.to_string())?;
+
     let mut client = SorobanRpcClient::new_with_timeout(
         url,
         Duration::from_secs(args.rpc_timeout.unwrap_or(10)),
@@ -178,6 +251,9 @@ pub(super) fn prepare_scan(
         .with_persistent_symbols(args.key.clone())
         .with_persistent_xdr_keys(args.key_xdr.clone())
         .with_persistent_key_exprs(args.key_expr.clone())
+        .with_temporary_symbols(args.temp_key.clone())
+        .with_temporary_xdr_keys(args.temp_key_xdr.clone())
+        .with_instance_size_thresholds(instance_size_thresholds)
         .with_ledger_seconds(args.ledger_seconds);
     Ok((ScanContractUseCase::new(client), request))
 }
@@ -405,6 +481,32 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
     }
 
     // 1. Validate argument bounds before making any RPC calls
+    let supported_formats = [
+        "text",
+        "json",
+        "ndjson",
+        "csv",
+        "parquet",
+        "sarif",
+        "markdown",
+        "html",
+        "prometheus",
+        "pushgateway",
+        "sonarqube",
+    ];
+    if !supported_formats.contains(&format.as_str()) {
+        let supported = if cfg!(feature = "parquet") {
+            "text, json, ndjson, csv, parquet, sarif, markdown, html, prometheus, pushgateway, sonarqube"
+        } else {
+            "text, json, ndjson, csv, sarif, markdown, html, prometheus, pushgateway, sonarqube"
+        };
+        eprintln!(
+            "Error: Unsupported format '{}'. Supported formats: {}",
+            args.format, supported
+        );
+        return EXIT_INVALID_ARGS;
+    }
+
     if let Some(timeout) = args.rpc_timeout {
         if !(1..=120).contains(&timeout) {
             eprintln!(
@@ -414,7 +516,6 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             return EXIT_INVALID_ARGS;
         }
     }
-
     if let Some(retries) = args.rpc_max_retries {
         if retries > 10 {
             eprintln!(
@@ -424,20 +525,33 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             return EXIT_INVALID_ARGS;
         }
     }
-
-    if let Some(ledger_seconds) = args.ledger_seconds {
-        if !(1.0..=60.0).contains(&ledger_seconds) {
+    if let Some(seconds) = args.ledger_seconds {
+        if !(1.0..=60.0).contains(&seconds) {
             eprintln!(
                 "Error: --ledger-seconds must be between 1.0 and 60.0 (got {})",
-                ledger_seconds
+                seconds
             );
             return EXIT_INVALID_ARGS;
         }
+    }
+    if let Err(err) = InstanceSizeThresholds::try_new(
+        args.instance_size_warn_pct,
+        args.instance_size_critical_pct,
+    ) {
+        eprintln!("Error: {}", err);
+        return EXIT_INVALID_ARGS;
     }
 
     if let Err(error) = validate_sample_window(args.sample_window) {
         eprintln!("Error: --sample-window {}", error);
         return EXIT_INVALID_ARGS;
+    }
+
+    for expr in &args.key_expr {
+        if let Err(err) = sentinel_core::adapters::parse_key_expr(expr) {
+            eprintln!("Error: Invalid key expression '{}': {}", expr, err);
+            return EXIT_INVALID_ARGS;
+        }
     }
 
     let baseline_snapshot = if let Some(ref path) = args.baseline {
@@ -460,12 +574,26 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         }
     };
 
+    let instance_size_thresholds = match InstanceSizeThresholds::try_new(
+        args.instance_size_warn_pct,
+        args.instance_size_critical_pct,
+    ) {
+        Ok(t) => t,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            return EXIT_INVALID_ARGS;
+        }
+    };
+
     let mut request = ScanRequest::new(&args.contract_id)
         .with_network(&args.network)
         .with_threshold_config(threshold_config)
         .with_persistent_symbols(args.key)
         .with_persistent_xdr_keys(args.key_xdr)
         .with_persistent_key_exprs(args.key_expr)
+        .with_temporary_symbols(args.temp_key)
+        .with_temporary_xdr_keys(args.temp_key_xdr)
+        .with_instance_size_thresholds(instance_size_thresholds)
         .with_sample_window(args.sample_window);
 
     if let Some(ledger_seconds) = args.ledger_seconds {
@@ -518,16 +646,7 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             Ok(report) => (report, Some(network_reader), rpc_url),
             Err(err) => {
                 eprintln!("Error: {err}");
-                return match err {
-                    SentinelError::InvalidContractAddress(_)
-                    | SentinelError::InvalidXdrKey(_)
-                    | SentinelError::InvalidThresholdConfig(_)
-                    | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
-                    SentinelError::RpcConnectionTimeout(_)
-                    | SentinelError::RpcResponseError { .. }
-                    | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
-                    _ => EXIT_INVALID_ARGS,
-                };
+                return exit_code_for_error(&err);
             }
         }
     };
@@ -561,6 +680,9 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
     }
     crate::telemetry::record_scan_metrics(&report);
 
+    if let Some(note) = entry_size_limit_note(&report) {
+        eprintln!("{}", note);
+    }
     let baseline_diff = baseline_snapshot
         .as_ref()
         .map(|b| compare_reports(&report, b));
@@ -588,15 +710,12 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         .as_ref()
         .map(|d| d.summary.has_regression)
         .unwrap_or(false);
-    let final_exit_code = if args.fail_on_regression && diff_has_regression {
-        EXIT_CRITICAL_OR_ARCHIVED
-    } else {
-        match report.overall_status {
-            RiskLevel::Ok => EXIT_OK,
-            RiskLevel::Warn => EXIT_WARN,
-            RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
-        }
-    };
+    let final_exit_code = resolve_scan_exit_code(
+        report.overall_status,
+        args.fail_on_risk.as_deref() == Some("critical"),
+        args.fail_on_regression,
+        diff_has_regression,
+    );
 
     if format == "parquet" {
         return match emit_parquet(&report, args.output.as_deref()) {
@@ -636,12 +755,14 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         "html" => Ok(render_html(&report)),
         "pushgateway" => Ok(render_pushgateway(&report)),
         "sarif" => render_sarif(&report),
+        "sonarqube" => render_sonarqube(&report),
         "markdown" => Ok(render_markdown(&report)),
+        "prometheus" => Ok(render_prometheus(&report)),
         other => {
             let supported = if cfg!(feature = "parquet") {
-                "text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, html"
+                "text, json, ndjson, csv, parquet, sarif, markdown, html, prometheus, pushgateway, sonarqube"
             } else {
-                "text, json, ndjson, csv, sarif, markdown, pushgateway, html"
+                "text, json, ndjson, csv, sarif, markdown, html, prometheus, pushgateway, sonarqube"
             };
             eprintln!(
                 "Error: Unsupported format '{}'. Supported formats: {}",
@@ -761,6 +882,30 @@ fn apply_alias(args: &mut ScanArgs) -> Result<(), i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fail_on_critical_risk_only_fails_at_critical_or_archived() {
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Ok, true, false, false),
+            EXIT_OK
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Warn, true, false, false),
+            EXIT_OK
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Critical, true, false, false),
+            EXIT_CRITICAL_OR_ARCHIVED
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Archived, true, false, false),
+            EXIT_CRITICAL_OR_ARCHIVED
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Warn, false, false, false),
+            EXIT_WARN
+        );
+    }
 
     #[cfg(feature = "parquet")]
     #[test]

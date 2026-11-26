@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sentinel_core::{
     derive_contract_instance_key, derive_persistent_key_from_scval, derive_persistent_symbol_key,
-    derive_persistent_xdr_key, parse_contract_id, parse_key_expr, EntryType, RiskLevel,
+    derive_persistent_xdr_key, derive_temporary_key_from_scval, derive_temporary_symbol_key,
+    derive_temporary_xdr_key, parse_contract_id, parse_key_expr, EntryType, RiskLevel,
     SentinelError, SentinelResult, StorageEntryReport, TTLReport,
 };
 
@@ -162,6 +163,22 @@ fn key_xdr_for_entry(contract_id: &[u8; 32], entry: &StorageEntryReport) -> Sent
                 Ok(identifier.to_string())
             }
         }
+        EntryType::TemporaryData => {
+            let identifier = entry.key_identifier.as_str();
+            if let Some(raw) = identifier.strip_prefix("temporary_xdr:") {
+                derive_temporary_xdr_key(contract_id, raw)
+            } else if let Some(raw) = identifier.strip_prefix("temporary:") {
+                match derive_temporary_symbol_key(contract_id, raw) {
+                    Ok(key) => Ok(key),
+                    Err(_) => {
+                        let scval = parse_key_expr(raw)?;
+                        derive_temporary_key_from_scval(contract_id, scval)
+                    }
+                }
+            } else {
+                Ok(identifier.to_string())
+            }
+        }
     }
 }
 
@@ -206,6 +223,27 @@ fn civil_date_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconstructs_temporary_symbol_key_xdr() {
+        let contract_id = [7; 32];
+        let entry = StorageEntryReport::new(
+            "temporary:Balance",
+            EntryType::TemporaryData,
+            sentinel_core::Durability::Temporary,
+            8,
+            100,
+            50,
+            1.0,
+            1.0,
+            RiskLevel::Ok,
+        );
+
+        assert_eq!(
+            key_xdr_for_entry(&contract_id, &entry).unwrap(),
+            derive_temporary_symbol_key(&contract_id, "Balance").unwrap()
+        );
+    }
 
     #[test]
     fn test_format_epoch_seconds() {

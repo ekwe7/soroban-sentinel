@@ -48,11 +48,11 @@ pub struct JsonSummary {
 /// Individual storage entry report conforming to published JSON schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonEntryReport {
-    /// Identifier of the entry (e.g., "instance", "code_wasm", "persistent:Admin").
+    /// Identifier of the entry (e.g., "instance", "code_wasm", "persistent:Admin", "temporary:NONCE").
     pub identifier: String,
     /// Classification type (e.g., "contract_instance", "contract_code", "contract_data").
     pub entry_type: String,
-    /// Durability tier (e.g., "instance", "code", "persistent").
+    /// Durability tier (e.g., "instance", "code", "persistent", "temporary").
     pub durability: String,
     /// Serialized size in bytes.
     pub size_bytes: usize,
@@ -66,6 +66,33 @@ pub struct JsonEntryReport {
     pub estimated_remaining_days: f64,
     /// Lowercase risk status (e.g., "ok", "warn", "critical", "archived").
     pub status: String,
+    /// WASM metadata for ContractCode entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_inspection: Option<sentinel_core::WasmCodeInspection>,
+    /// `true` when a temporary entry is missing or expired: it is deleted permanently and
+    /// cannot be restored. Omitted otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unrecoverable: bool,
+    /// Instance-storage size metrics, present only on a found contract instance entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_storage: Option<JsonInstanceStorage>,
+}
+
+/// Instance-storage size metrics of a contract instance entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonInstanceStorage {
+    /// Number of keys in the instance storage map.
+    pub key_count: u32,
+    /// Serialized size of the instance ledger entry in bytes.
+    pub entry_size_bytes: usize,
+    /// Network `max_contract_data_entry_bytes`; omitted if it could not be fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entry_size_bytes: Option<u32>,
+    /// Entry size as a percentage of the limit (2 decimals); omitted without the limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilization_pct: Option<f64>,
+    /// Lowercase status from entry size alone (e.g. "ok", "warn", "critical").
+    pub size_status: String,
 }
 
 impl From<&TTLReport> for JsonTTLReport {
@@ -86,7 +113,8 @@ impl From<&TTLReport> for JsonTTLReport {
                 let entry_type_str = match entry.entry_type {
                     sentinel_core::domain::EntryType::ContractInstance => "contract_instance",
                     sentinel_core::domain::EntryType::ContractCode => "contract_code",
-                    sentinel_core::domain::EntryType::PersistentData => "contract_data",
+                    sentinel_core::domain::EntryType::PersistentData
+                    | sentinel_core::domain::EntryType::TemporaryData => "contract_data",
                 };
 
                 JsonEntryReport {
@@ -99,6 +127,19 @@ impl From<&TTLReport> for JsonTTLReport {
                     estimated_remaining_seconds: entry.estimated_remaining_seconds,
                     estimated_remaining_days: (entry.remaining_days * 100.0).round() / 100.0,
                     status: entry.status.to_string().to_lowercase(),
+                    wasm_inspection: entry.wasm_inspection.clone(),
+                    unrecoverable: entry.is_unrecoverable(),
+                    instance_storage: entry.instance_storage.as_ref().map(|metrics| {
+                        JsonInstanceStorage {
+                            key_count: metrics.key_count,
+                            entry_size_bytes: metrics.entry_size_bytes,
+                            max_entry_size_bytes: metrics.max_entry_size_bytes,
+                            utilization_pct: metrics
+                                .utilization_pct
+                                .map(|pct| (pct * 100.0).round() / 100.0),
+                            size_status: metrics.size_status.to_string().to_lowercase(),
+                        }
+                    }),
                 }
             })
             .collect();
@@ -306,5 +347,124 @@ mod tests {
 
         assert_eq!(parsed["summary"]["total_entries"], 0);
         assert_eq!(parsed["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_render_json_temporary_entries() {
+        let report = TTLReport {
+            contract_id: "CTEMP".to_string(),
+            network: "testnet".to_string(),
+            latest_ledger: 5_400_000,
+            ledger_velocity_seconds: 5.0,
+            entries: vec![
+                StorageEntryReport::new(
+                    "temporary:NONCE",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    48,
+                    5_450_000,
+                    50_000,
+                    250_000.0,
+                    2.89,
+                    RiskLevel::Warn,
+                ),
+                StorageEntryReport::new(
+                    "temporary:SESSION",
+                    EntryType::TemporaryData,
+                    Durability::Temporary,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    0.0,
+                    RiskLevel::Archived,
+                ),
+            ],
+            overall_status: RiskLevel::Archived,
+            archival_recommendations: Vec::new(),
+            ..TTLReport::default()
+        };
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&render_json(&report).unwrap()).unwrap();
+        let live = &parsed["entries"][0];
+        assert_eq!(live["identifier"], "temporary:NONCE");
+        assert_eq!(live["durability"], "temporary");
+        assert_eq!(live["entry_type"], "contract_data");
+        assert!(live.get("unrecoverable").is_none());
+
+        let gone = &parsed["entries"][1];
+        assert_eq!(gone["identifier"], "temporary:SESSION");
+        assert_eq!(gone["status"], "archived");
+        assert_eq!(gone["unrecoverable"], true);
+    }
+
+    #[test]
+    fn test_render_json_instance_storage_metrics() {
+        let mut with_limit = StorageEntryReport::new(
+            "instance",
+            EntryType::ContractInstance,
+            Durability::Instance,
+            52_000,
+            5_900_000,
+            500_000,
+            2_500_000.0,
+            28.9,
+            RiskLevel::Warn,
+        );
+        with_limit.instance_storage = Some(sentinel_core::usecases::InstanceStorageReport {
+            key_count: 60,
+            entry_size_bytes: 52_429,
+            max_entry_size_bytes: Some(65_536),
+            utilization_pct: Some(80.000_15),
+            size_status: RiskLevel::Warn,
+        });
+        let mut without_limit = with_limit.clone();
+        without_limit.instance_storage = Some(sentinel_core::usecases::InstanceStorageReport {
+            key_count: 60,
+            entry_size_bytes: 52_429,
+            max_entry_size_bytes: None,
+            utilization_pct: None,
+            size_status: RiskLevel::Ok,
+        });
+        let code = StorageEntryReport::new(
+            "code_wasm",
+            EntryType::ContractCode,
+            Durability::Code,
+            1,
+            5_900_000,
+            500_000,
+            1.0,
+            1.0,
+            RiskLevel::Ok,
+        );
+
+        for (entry, limit_known) in [(with_limit, true), (without_limit, false)] {
+            let report = TTLReport {
+                contract_id: "CSIZE".to_string(),
+                network: "testnet".to_string(),
+                latest_ledger: 5_400_000,
+                ledger_velocity_seconds: 5.0,
+                entries: vec![entry, code.clone()],
+                overall_status: RiskLevel::Warn,
+                archival_recommendations: Vec::new(),
+                ..TTLReport::default()
+            };
+            let parsed: serde_json::Value =
+                serde_json::from_str(&render_json(&report).unwrap()).unwrap();
+            let metrics = &parsed["entries"][0]["instance_storage"];
+            assert_eq!(metrics["key_count"], 60);
+            assert_eq!(metrics["entry_size_bytes"], 52_429);
+            if limit_known {
+                assert_eq!(metrics["max_entry_size_bytes"], 65_536);
+                assert_eq!(metrics["utilization_pct"], 80.0);
+                assert_eq!(metrics["size_status"], "warn");
+            } else {
+                assert!(metrics.get("max_entry_size_bytes").is_none());
+                assert!(metrics.get("utilization_pct").is_none());
+                assert_eq!(metrics["size_status"], "ok");
+            }
+            assert!(parsed["entries"][1].get("instance_storage").is_none());
+        }
     }
 }

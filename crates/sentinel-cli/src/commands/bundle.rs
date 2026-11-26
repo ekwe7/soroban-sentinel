@@ -26,6 +26,7 @@ use crate::args::BundleArgs;
 use crate::commands::scan::{resolve_rpc_url, EXIT_INVALID_ARGS, EXIT_RPC_FAILURE};
 
 const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BundleManifest {
@@ -396,10 +397,10 @@ fn resolve_contracts(args: &BundleArgs) -> Result<Vec<ContractInput>, BundleComm
             if !contract.keys.contains(key) {
                 contract.keys.push(key.clone());
             }
-            for key_xdr in &args.key_xdr {
-                if !contract.key_xdr.contains(key_xdr) {
-                    contract.key_xdr.push(key_xdr.clone());
-                }
+        }
+        for key_xdr in &args.key_xdr {
+            if !contract.key_xdr.contains(key_xdr) {
+                contract.key_xdr.push(key_xdr.clone());
             }
         }
     }
@@ -432,10 +433,10 @@ fn merge_contract(
         if !target.keys.contains(key) {
             target.keys.push(key.clone());
         }
-        for key in key_xdr {
-            if !target.key_xdr.contains(key) {
-                target.key_xdr.push(key.clone());
-            }
+    }
+    for key in key_xdr {
+        if !target.key_xdr.contains(key) {
+            target.key_xdr.push(key.clone());
         }
     }
     Ok(())
