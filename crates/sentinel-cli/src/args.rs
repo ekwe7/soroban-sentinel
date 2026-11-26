@@ -25,6 +25,10 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(Box<ScanArgs>),
+    /// Export OpenAPI 3.1 webhook contracts offline
+    ExportOpenapi(ExportOpenapiArgs),
+    /// Score contract health from a fleet manifest
+    HealthMatrix(HealthMatrixArgs),
     /// Rank resolved contract entries by serialized byte size
     TopConsumers(TopConsumersArgs),
     /// Check Soroban RPC connectivity, network identity, and protocol support
@@ -84,6 +88,8 @@ pub enum Commands {
     Redact(RedactArgs),
     /// Validate contract and key arguments, then check RPC health
     DryRun(DryRunArgs),
+    /// Estimate a contract TTL extension's resource limits
+    EstimateGas(EstimateGasArgs),
 
     /// Analyze historical scan snapshots to project TTL decay and threshold crossings
     Trend(TrendArgs),
@@ -149,6 +155,24 @@ pub struct DryRunArgs {
     pub rpc_url: Option<String>,
     #[arg(long = "key-expr", value_name = "EXPR")]
     pub key_expr: Vec<String>,
+#[derive(Args, Debug, Clone)]
+pub struct EstimateGasArgs {
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+    #[arg(long = "extend-by", value_name = "LEDGERS")]
+    pub extend_by: u32,
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
 }
 
 // Avoid Debug implementations that print provider credentials.
@@ -163,6 +187,17 @@ pub struct WatchArgs {
     pub pagerduty_routing_key: Option<String>,
     #[arg(long, env = "OPSGENIE_API_KEY", hide_env_values = true)]
     pub opsgenie_api_key: Option<String>,
+    /// Telegram Bot API token for outbound risk alerts
+    #[arg(long, env = "SENTINEL_TELEGRAM_BOT_TOKEN", hide_env_values = true)]
+    pub telegram_bot_token: Option<String>,
+    /// Telegram target chat or channel ID for outbound risk alerts
+    #[arg(
+        long,
+        env = "SENTINEL_TELEGRAM_CHAT_ID",
+        hide_env_values = true,
+        allow_hyphen_values = true
+    )]
+    pub telegram_chat_id: Option<String>,
     /// Datadog API key for metrics and events submission
     #[arg(
         long,
@@ -382,6 +417,7 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
+    /// Output format for scan results: text, json, csv, parquet, sarif, markdown, or pushgateway
     /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), or "markdown"
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
@@ -1010,4 +1046,30 @@ mod tests {
             _ => panic!("expected trend command"),
         }
     }
+}
+
+#[derive(Args, Debug)]
+pub struct ExportOpenapiArgs {
+    #[arg(long, default_value = "json", value_parser = ["json", "yaml"])]
+    pub format: String,
+}
+
+#[derive(Args, Debug)]
+pub struct HealthMatrixArgs {
+    #[arg(long, value_name = "PATH")]
+    pub manifest: std::path::PathBuf,
+    /// Show only contracts scoring below this minimum.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+    pub min_score: Option<u8>,
+    /// Persistent-key count consuming all 20 count-headroom points.
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
+    pub entry_budget: u32,
+    /// Largest-entry byte size consuming all 20 storage-headroom points.
+    #[arg(long, default_value_t = 65536, value_parser = clap::value_parser!(u64).range(1..))]
+    pub storage_budget_bytes: u64,
+    /// Supply a planning rent rate together with its denominator.
+    #[arg(long, requires = "rent_denominator")]
+    pub rent_fee_per_kib: Option<u64>,
+    #[arg(long, requires = "rent_fee_per_kib", value_parser = clap::value_parser!(u64).range(1..))]
+    pub rent_denominator: Option<u64>,
 }

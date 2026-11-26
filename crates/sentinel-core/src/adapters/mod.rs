@@ -50,3 +50,6 @@ pub use soroban_rpc::{
 };
 mod submitter;
 pub mod wasm_spec;
+
+pub mod fee_bump;
+pub use fee_bump::{inspect_transaction_envelope, unwrap_fee_bump_envelope, InspectedEnvelope};

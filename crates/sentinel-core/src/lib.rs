@@ -11,6 +11,7 @@ pub mod ports;
 pub mod usecases;
 
 pub use adapters::*;
+pub use domain::fee_bump;
 pub use domain::*;
 pub use error::*;
 pub use ports::*;

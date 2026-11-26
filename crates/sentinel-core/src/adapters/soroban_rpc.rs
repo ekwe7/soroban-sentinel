@@ -190,6 +190,8 @@ impl SorobanRpcClient {
         let http_client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::limited(3))
+            .gzip(true)
+            .zstd(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -206,6 +208,8 @@ impl SorobanRpcClient {
         self.http_client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::limited(3))
+            .gzip(true)
+            .zstd(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         self
@@ -347,6 +351,7 @@ impl SorobanRpcClient {
             match self
                 .http_client
                 .post(&self.rpc_url)
+                .header(reqwest::header::ACCEPT_ENCODING, "gzip, zstd")
                 .json(payload)
                 .send()
                 .await

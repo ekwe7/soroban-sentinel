@@ -72,6 +72,8 @@ async fn main() {
     let telemetry = telemetry::init(&TelemetryConfig::resolve(cli.otlp_endpoint.as_deref()));
 
     let exit_code = match cli.command {
+        Commands::ExportOpenapi(args) => commands::run_export_openapi(args),
+        Commands::HealthMatrix(args) => commands::run_health_matrix(args).await,
         Commands::TopConsumers(args) => commands::run_top_consumers(args).await,
         Commands::Check(args) => commands::run_check(args).await,
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
@@ -95,6 +97,7 @@ async fn main() {
         Commands::Forecast(args) => commands::run_forecast(args).await,
         Commands::Redact(args) => commands::run_redact(args),
         Commands::DryRun(args) => commands::run_dry_run(args).await,
+        Commands::EstimateGas(args) => commands::run_estimate_gas(args).await,
         Commands::Trend(args) => commands::run_trend(args),
     };
 

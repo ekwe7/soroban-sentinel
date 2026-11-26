@@ -29,6 +29,7 @@ pub mod restore;
 pub mod restore_fee;
 pub mod risk;
 pub(crate) mod scenario;
+pub mod shadow_keys;
 pub mod storage_audit;
 pub mod ttl;
 pub mod upgrade;
@@ -102,6 +103,7 @@ pub use scenario::{
     evaluate_protocol_scenario, NetworkRentParameters, ProtocolScenarioReport, ScenarioEntry,
     ScenarioEntryImpact, ScenarioError,
 };
+pub use shadow_keys::{detect_shadowed_keys, KeyCollisionKind, KeyCollisionWarning};
 pub use storage_audit::{
     analyze_storage_entry, estimate_annual_rent_savings, AuditEntry, AuditFinding,
     AuditFindingKind, StorageAuditReport, MAX_SOROBAN_ENTRY_BYTES,
@@ -122,9 +124,11 @@ pub use wasm_imports::{
     WasmImportKind, WasmValueType,
 };
 
+pub mod grace_period;
 pub use durability_migration::{
     DurabilityMigrationAnalysis, MigrationRequest, RentAnalysisError, RentRates,
 };
+pub use grace_period::{calculate_grace_window, GracePeriodStatus, NetworkConfig};
 pub use histogram::{ExpirationBucket, ExpirationHistogram, HistogramBucket};
 pub use init_footprint::{predict_initial_footprint, InitialFootprintEstimate};
 pub use multisig::{

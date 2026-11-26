@@ -22,8 +22,8 @@ use crate::args::ScanArgs;
 #[cfg(feature = "parquet")]
 use crate::formatters::render_parquet;
 use crate::formatters::{
-    render_csv, render_json_with_diff, render_markdown, render_ndjson, render_sarif,
-    render_text_with_diff_and_options,
+    render_csv, render_json_with_diff, render_markdown, render_ndjson, render_pushgateway,
+    render_sarif, render_text_with_diff_and_options,
 };
 
 /// Exit code: All evaluated storage entries have status OK.
@@ -633,13 +633,14 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         },
         "ndjson" => render_ndjson(&report),
         "csv" => render_csv(&report),
+        "pushgateway" => Ok(render_pushgateway(&report)),
         "sarif" => render_sarif(&report),
         "markdown" => Ok(render_markdown(&report)),
         other => {
             let supported = if cfg!(feature = "parquet") {
-                "text, json, ndjson, csv, parquet, sarif, markdown"
+                "text, json, ndjson, csv, parquet, sarif, markdown, pushgateway"
             } else {
-                "text, json, ndjson, csv, sarif, markdown"
+                "text, json, ndjson, csv, sarif, markdown, pushgateway"
             };
             eprintln!(
                 "Error: Unsupported format '{}'. Supported formats: {}",
@@ -661,8 +662,8 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
                     eprintln!("Error: failed to write --output '{}': {}", path, err);
                     return EXIT_INVALID_ARGS;
                 }
-            } else if format == "csv" {
-                // The CSV writer already terminates every record; avoid a blank line.
+            } else if matches!(format.as_str(), "csv" | "pushgateway") {
+                // These formats already terminate their final line.
                 println!("{}", output.trim_end_matches('\n'));
             } else if format == "ndjson" {
                 if !output.is_empty() {
