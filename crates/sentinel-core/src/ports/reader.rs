@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::burn_rate::LedgerCloseSample;
 use crate::error::SentinelResult;
 
 /// Current health classification for a ledger reader endpoint.
@@ -84,4 +85,33 @@ pub trait LedgerReader: Send + Sync {
         let _ = latest_ledger;
         Ok(None)
     }
+
+    /// Returns recent ledger close samples for burn rate calculation, if supported.
+    ///
+    /// Implementations may return `None` when historical ledger data is pruned
+    /// or unavailable. Callers should then fall back to the target velocity.
+    async fn get_ledger_close_samples(
+        &self,
+        latest_ledger: u32,
+        sample_window: u32,
+    ) -> SentinelResult<Option<Vec<LedgerCloseSample>>> {
+        let _ = (latest_ledger, sample_window);
+        Ok(None)
+    }
+}
+
+/// Health fields reported by Soroban RPC.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcHealth {
+    pub status: String,
+    pub latest_ledger: u32,
+}
+
+/// Network identity reported by Soroban RPC.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcNetwork {
+    pub passphrase: String,
+    pub protocol_version: u32,
 }

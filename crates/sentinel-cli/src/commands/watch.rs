@@ -1,81 +1,135 @@
-//! Watch command for Soroban Sentinel.
-//!
-//! Monitors a contract's storage entries for TTL expiration and risk events,
-//! with support for email and webhook notifications.
+use std::time::Duration;
 
-use crate::args::WatchArgs;
-use crate::commands::scan::{EXIT_INVALID_ARGS, EXIT_OK, EXIT_RPC_FAILURE};
+use crate::{
+    adapters::alert_teams::TeamsAlertDispatcher,
+    alerts::{
+        datadog::{DatadogAdapter, DatadogSite},
+        incident::{IncidentDispatcher, Provider},
+    },
+    args::WatchArgs,
+    commands::{scan::prepare_scan, EXIT_INVALID_ARGS},
+    formatters::{render_json, render_text_with_options},
+};
 
-/// Run the watch command.
-///
-/// Currently supports observing a contract with optional email and webhook
-/// notification configuration. The full monitoring loop is intended for future
-/// implementation; this entry point acknowledges the command configuration.
 pub async fn run_watch(args: WatchArgs) -> i32 {
-    // Validate RPC URL
-    let _rpc_url = match super::resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
-        Ok(url) => url,
-        Err(e) => {
-            eprintln!("Failed to resolve RPC URL: {e}");
-            return EXIT_RPC_FAILURE;
+    if args.scan.baseline.is_some() || args.scan.fail_on_regression {
+        eprintln!("Error: baseline comparison is available with sentinel scan");
+        return EXIT_INVALID_ARGS;
+    }
+    let format = args.scan.format.to_ascii_lowercase();
+    if !matches!(format.as_str(), "json" | "text") {
+        eprintln!("Error: --format must be text or json");
+        return EXIT_INVALID_ARGS;
+    }
+    if let Err(error) = sentinel_core::parse_contract_id(&args.scan.contract_id) {
+        eprintln!("Error: {error}");
+        return EXIT_INVALID_ARGS;
+    }
+    let (usecase, request) = match prepare_scan(&args.scan) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return EXIT_INVALID_ARGS;
         }
     };
 
-    // Basic validation of watch arguments
-    if args.contract_id.is_empty() {
-        eprintln!("Contract ID is required for watch mode");
-        return EXIT_INVALID_ARGS;
-    }
+    let mut teams = if let Some(webhook_url) = args.alert_teams.as_deref() {
+        match TeamsAlertDispatcher::new(webhook_url) {
+            Ok(dispatcher) => Some(dispatcher),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        None
+    };
 
-    // TODO: Implement full watch loop with:
-    // - Periodic scanning of contract storage entries
-    // - TTL expiration risk assessment
-    // - Email notifications via SMTP
-    // - Webhook notifications with HMAC-SHA256 signatures
-    // - 24-hour deduplication cooldown
-    // - Storage bloat regression detection
-    // - Adaptive ledger velocity estimation
+    let providers = [
+        args.pagerduty_routing_key
+            .map(|routing_key| Provider::PagerDuty {
+                endpoint: "https://events.pagerduty.com/v2/enqueue"
+                    .parse()
+                    .expect("valid PagerDuty URL"),
+                routing_key,
+            }),
+        args.opsgenie_api_key.map(|api_key| Provider::Opsgenie {
+            endpoint: "https://api.opsgenie.com/v2/alerts"
+                .parse()
+                .expect("valid Opsgenie URL"),
+            api_key,
+        }),
+    ];
+    let mut dispatchers: Vec<_> = match providers
+        .into_iter()
+        .flatten()
+        .map(IncidentDispatcher::new)
+        .collect()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("Error: could not initialize incident HTTP client");
+            return EXIT_INVALID_ARGS;
+        }
+    };
 
-    println!("Watch mode activated for contract {} on network {}", args.contract_id, args.network);
-    println!("Configuration: threshold={}, critical_threshold={:?}, smtp={:?}, webhook={:?}",
-             args.threshold, args.critical_threshold, args.smtp_server, args.webhook_url);
+    // Build the optional Datadog adapter when credentials are provided.
+    let mut datadog: Option<DatadogAdapter> = if let Some(api_key) = args.datadog_api_key {
+        let site = match DatadogSite::parse(&args.datadog_site) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        match DatadogAdapter::new(api_key, &site) {
+            Ok(adapter) => Some(adapter),
+            Err(_) => {
+                eprintln!("Error: could not initialize Datadog HTTP client");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        None
+    };
 
-    EXIT_OK
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_watch_args_parses() {
-        let args = WatchArgs::parse_from([
-            "sentinel",
-            "watch",
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "--network",
-            "testnet",
-        ]);
-        assert_eq!(args.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
-        assert_eq!(args.network, "testnet");
-    }
-
-    #[test]
-    fn test_watch_args_with_notifications() {
-        let args = WatchArgs::parse_from([
-            "sentinel",
-            "watch",
-            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "--network",
-            "testnet",
-            "--smtp-server",
-            "smtp.example.com",
-            "--webhook-url",
-            "https://example.com/webhook",
-        ]);
-        assert_eq!(args.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
-        assert_eq!(args.network, "testnet");
-        assert!(args.smtp_server.is_some());
-        assert!(args.webhook_url.is_some());
+    loop {
+        match usecase.execute_with_keys(request.clone()).await {
+            Ok((report, keys)) => {
+                let output = if format == "json" {
+                    render_json(&report)
+                } else {
+                    Ok(render_text_with_options(&report, args.scan.no_color))
+                };
+                match output {
+                    Ok(output) => println!("{output}"),
+                    Err(error) => eprintln!("Watch report failed: {error}"),
+                }
+                for dispatcher in &mut dispatchers {
+                    if let Err(error) = dispatcher.observe(&report, &keys).await {
+                        eprintln!("Watch notification failed: {error}");
+                    }
+                }
+                if let Some(dd) = datadog.as_mut() {
+                    if let Err(error) = dd.observe(&report).await {
+                        eprintln!("Datadog notification failed: {error}");
+                    }
+                }
+                if let Some(teams) = teams.as_mut() {
+                    if let Err(error) = teams.observe(&report).await {
+                        eprintln!("Teams notification failed: {error}");
+                    }
+                }
+            }
+            Err(
+                error @ (sentinel_core::SentinelError::InvalidXdrKey(_)
+                | sentinel_core::SentinelError::InvalidContractAddress(_)),
+            ) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+            Err(error) => eprintln!("Watch scan failed: {error}"),
+        }
+        tokio::time::sleep(Duration::from_secs(args.interval)).await;
     }
 }

@@ -1,4 +1,7 @@
 //! Pure domain mathematics for Soroban storage TTL decay and time horizon estimation.
+//!
+//! Use [`super::probabilistic_ttl::estimate_probabilistic_lifetime`] to project
+//! an expiration timestamp from measured ledger close variance.
 
 /// Target ledger close time in seconds on Stellar/Soroban (approximately 5 seconds per ledger).
 pub const TARGET_LEDGER_CLOSE_SECONDS: f64 = 5.0;

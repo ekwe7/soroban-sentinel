@@ -85,7 +85,8 @@ impl NetworkRentParameters {
         ThresholdConfig::new(self.warning_ledgers, self.critical_ledgers)
     }
 
-    fn monthly_cost_per_byte(&self) -> f64 {
+    /// Expose the existing rent formula within the core for WASM analysis reuse.
+    pub(crate) fn monthly_cost_per_byte(&self) -> f64 {
         self.fee_rate_per_byte * self.rent_write_fee_multiplier * self.ledgers_per_month as f64
             / self.minimum_persistent_ttl as f64
     }

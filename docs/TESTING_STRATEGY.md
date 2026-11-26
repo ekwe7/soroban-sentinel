@@ -88,9 +88,19 @@ Mock tests run against an in-process HTTP mock server using the `wiremock` crate
 | :--- | :--- | :--- |
 | `sentinel scan CA3D... --format text` | Formatted terminal table printed to `stdout` | `0` (if all entries OK) |
 | `sentinel scan CA3D... --format json` | Output parses as valid JSON against schema | `0` (if all entries OK) |
+| `sentinel scan CA3D... --format csv` | Output parses as CSV with the exact nine-column header and no ANSI codes | `0` (if all entries OK) |
+| `sentinel scan CA3D... --format csv --baseline baseline.json` | Rejected before RPC with a clear error | `10` (Bad Input) |
 | `sentinel scan INVALID_STRKEY` | Error message: `Invalid contract ID '...'` | `10` (Bad Input) |
 | `sentinel scan CA3D... --threshold 99999999` | All entries evaluated as `WARN` | `1` (Warning State) |
 | `sentinel scan <NON_EXISTENT_CONTRACT>` | Warning: `Contract instance not found` | `2` (Critical / Missing) |
+
+#### Test Suite: State Restoration (`tests/cli_restore.rs`)
+
+| Input Command | Expected Output / Behavior | Expected Exit Code |
+| :--- | :--- | :--- |
+| `sentinel restore CA3D... --key ADMIN` (archived) | JSON/text plan with `RestoreFootprintOp`, simulated resource fee, unsigned XDR, and `stellar contract restore --build-only` command | `0` |
+| `sentinel restore CA3D... --key ADMIN` (still live) | Error: `No archived keys found for the requested targets; nothing to restore` | `10` (Bad Input) |
+| `sentinel restore CA3D... --key-expr <INVALID>` | Invalid key expression reported before RPC | `10` (Bad Input) |
 
 ---
 
@@ -143,3 +153,42 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 # 6. Verify formatting
 cargo fmt --all -- --check
 ```
+
+---
+
+## 5. Fuzzing Untrusted XDR and RPC Data
+
+The `fuzz/` directory is a separate cargo-fuzz workspace, so the main workspace
+never needs nightly Rust. It exercises the base64 XDR decoders, scan byte-size
+computation, and the private `getLedgerEntries` / `getLatestLedger` JSON-RPC DTOs
+through thin `#[doc(hidden)]` entry points enabled only by sentinel-core's
+non-default `fuzzing` feature.
+
+```bash
+# One-time setup
+rustup toolchain install nightly
+cargo install cargo-fuzz --locked
+
+# Regenerate the committed seed corpora from valid test fixtures
+cargo run --manifest-path fuzz/Cargo.toml --example generate_seeds
+
+# Build every target, then run one for 60 seconds
+cargo +nightly fuzz build
+cargo +nightly fuzz run derive_persistent_xdr_key -- -max_total_time=60
+
+# Run a target with the same 10 MiB input cap and a bounded RSS limit
+cargo +nightly fuzz run get_ledger_entries_response -- \
+  -max_total_time=60 -max_len=10485760 -rss_limit_mb=2048
+```
+
+Seeds live under `fuzz/corpus/<target>/` and are committed. Crashes or leaks are
+written to `fuzz/artifacts/<target>/`. To reproduce and minimize a crash:
+
+```bash
+cargo +nightly fuzz run <target> -- fuzz/artifacts/<target>/<crash-file>
+cargo +nightly fuzz tmin <target> fuzz/artifacts/<target>/<crash-file>
+```
+
+CI runs each target for 60 seconds on pull requests touching
+`crates/sentinel-core/**` via `.github/workflows/fuzz.yml` and uploads any crash
+artifacts.

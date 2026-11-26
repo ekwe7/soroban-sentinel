@@ -502,6 +502,21 @@ fn test_cli_scan_invalid_rpc_bounds_returns_exit_code_10() {
     ));
 }
 
+// Test N2: Invalid --sample-window bounds return exit code 10
+#[test]
+fn test_cli_scan_invalid_sample_window_returns_exit_code_10() {
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "--sample-window",
+        "1",
+    ]);
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("Sample window must be between"));
+}
+
 // Test O: Scan with --baseline comparison against wiremock
 #[tokio::test]
 async fn test_cli_scan_baseline_comparison() {
@@ -611,4 +626,44 @@ async fn test_cli_scan_baseline_comparison() {
         .stdout(predicate::str::contains("\"has_regression\": true"));
 
     let _ = std::fs::remove_file(temp_baseline);
+}
+
+#[test]
+fn test_cli_scan_invalid_snapshot_path_returns_exit_code_10() {
+    let snapshot_path = std::env::temp_dir().join(format!(
+        "sentinel-missing-snapshot-{}.sentinel-snap",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&snapshot_path);
+    let contract_strkey = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        contract_strkey,
+        "--snapshot",
+        snapshot_path.to_str().unwrap(),
+    ]);
+
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("Snapshot error"));
+}
+
+#[test]
+fn test_cli_scan_snapshot_conflicts_with_rpc_flags() {
+    let contract_strkey = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+    let mut cmd = Command::cargo_bin("sentinel").unwrap();
+    cmd.args([
+        "scan",
+        contract_strkey,
+        "--snapshot",
+        "unused.sentinel-snap",
+        "--rpc-url",
+        "http://127.0.0.1:8000/soroban/rpc",
+    ]);
+
+    cmd.assert()
+        .code(10)
+        .stderr(predicate::str::contains("cannot be combined with RPC"));
 }

@@ -15,6 +15,14 @@ path = "src/lib.rs"
 name = "sentinel"
 path = "src/main.rs"
 
+[features]
+# Interactive TUI dashboard. Disabled by default so the normal CLI binary
+# stays free of terminal-UI dependencies.
+tui = ["dep:ratatui", "dep:crossterm"]
+# Parquet export. Disabled by default so the normal CLI binary stays free of
+# Arrow/Parquet dependencies.
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
+
 [dependencies]
 sentinel-core.workspace = true
 clap.workspace = true
@@ -22,17 +30,32 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 comfy-table.workspace = true
+csv.workspace = true
+parquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 thiserror.workspace = true
 reqwest.workspace = true
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+url = "2"
+webpki-roots = "1"
+sha2.workspace = true
 stellar-xdr.workspace = true
 stellar-strkey.workspace = true
 toml = "0.8"
-lettre = "0.11"
-rustls = "0.24.0-dev.3"
-tracing = "0.1"
-ring = "0.16"
-base64 = "0.21"
-zeroize = "1.0"
+ed25519-dalek.workspace = true
+zeroize.workspace = true
+ratatui = { version = "0.26", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.27", optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

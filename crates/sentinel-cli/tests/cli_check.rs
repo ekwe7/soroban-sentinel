@@ -176,3 +176,60 @@ async fn invalid_later_contract_prevents_all_rpc_calls() {
         .stderr(predicate::str::contains("key_xdr"));
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn monitoring_plugin_returns_exact_codes_and_single_line_perfdata() {
+    let server = mock_fleet().await;
+    for (id, code, label) in [(4_u8, 0, "OK"), (1, 1, "WARNING"), (2, 2, "CRITICAL")] {
+        let output = Command::cargo_bin("sentinel")
+            .unwrap()
+            .args([
+                "check",
+                &stellar_strkey::Contract([id; 32]).to_string(),
+                "--rpc-url",
+                &server.uri(),
+            ])
+            .assert()
+            .code(code)
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        assert!(text.starts_with(&format!("SENTINEL {label} - contract ")));
+        assert!(text.contains(" | remaining_ledgers="));
+        assert!(text.contains(";120960:;34560:;0;"));
+    }
+}
+
+#[test]
+fn monitoring_argument_errors_are_unknown_on_stdout() {
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(["check", "bad-address"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::starts_with("SENTINEL UNKNOWN"));
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args(["check", "bad-address", "--warning-threshold", "oops"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::starts_with("SENTINEL UNKNOWN"));
+}
+
+#[tokio::test]
+async fn monitoring_rpc_errors_are_unknown_without_leaking_response_details() {
+    let server = mock_fleet().await;
+    Command::cargo_bin("sentinel")
+        .unwrap()
+        .args([
+            "check",
+            &stellar_strkey::Contract([3; 32]).to_string(),
+            "--rpc-url",
+            &server.uri(),
+        ])
+        .assert()
+        .code(3)
+        .stdout("SENTINEL UNKNOWN - contract scan failed\n");
+}

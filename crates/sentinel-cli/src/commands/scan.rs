@@ -1,17 +1,30 @@
 //! Execution logic for the `sentinel scan` CLI command.
 
 use std::fs;
+#[cfg(any(feature = "tui", feature = "parquet"))]
+use std::io::IsTerminal;
+#[cfg(feature = "parquet")]
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
 use sentinel_core::adapters::{validate_rpc_url, SorobanRpcClient};
 use sentinel_core::domain::compare::{compare_reports, BaselineSnapshot, MAX_BASELINE_FILE_BYTES};
-use sentinel_core::domain::{RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS};
+use sentinel_core::domain::{
+    build_recommendation_plan, shell_quote, validate_sample_window, RecommendationAction,
+    RiskLevel, ThresholdConfig, DEFAULT_CRITICAL_LEDGERS,
+};
 use sentinel_core::error::SentinelError;
-use sentinel_core::usecases::{ScanContractUseCase, ScanRequest};
+use sentinel_core::usecases::{fetch_network_limits, ScanContractUseCase, ScanRequest, TTLReport};
+use sentinel_core::{AlertKind, AlertMinLevel, AlertNotifier, WebhookAlertNotifier};
 
 use crate::args::ScanArgs;
-use crate::formatters::{render_json_with_diff, render_sarif, render_text_with_diff};
+#[cfg(feature = "parquet")]
+use crate::formatters::render_parquet;
+use crate::formatters::{
+    render_csv, render_json_with_diff, render_markdown, render_ndjson, render_sarif,
+    render_text_with_diff_and_options,
+};
 
 /// Exit code: All evaluated storage entries have status OK.
 pub const EXIT_OK: i32 = 0;
@@ -121,7 +134,276 @@ pub fn load_and_validate_baseline(
 }
 
 /// Executes the contract scan command and returns the appropriate UNIX exit code.
-pub async fn run_scan(args: ScanArgs) -> i32 {
+pub(super) fn prepare_scan(
+    args: &ScanArgs,
+) -> Result<(ScanContractUseCase<SorobanRpcClient>, ScanRequest), String> {
+    if args
+        .rpc_timeout
+        .is_some_and(|timeout| !(1..=120).contains(&timeout))
+    {
+        return Err(format!(
+            "--rpc-timeout must be between 1 and 120 seconds (got {})",
+            args.rpc_timeout.unwrap_or_default()
+        ));
+    }
+    if args.rpc_max_retries.is_some_and(|retries| retries > 10) {
+        return Err(format!(
+            "--rpc-max-retries must be between 0 and 10 (got {})",
+            args.rpc_max_retries.unwrap_or_default()
+        ));
+    }
+    if args
+        .ledger_seconds
+        .is_some_and(|seconds| !(1.0..=60.0).contains(&seconds))
+    {
+        return Err(format!(
+            "--ledger-seconds must be between 1.0 and 60.0 (got {})",
+            args.ledger_seconds.unwrap_or_default()
+        ));
+    }
+    let url = resolve_rpc_url(&args.network, args.rpc_url.as_deref())?;
+    let thresholds = resolve_threshold_config(args.threshold, args.critical_threshold)?;
+    let mut client = SorobanRpcClient::new_with_timeout(
+        url,
+        Duration::from_secs(args.rpc_timeout.unwrap_or(10)),
+    );
+    if let Some(retries) = args.rpc_max_retries {
+        let mut policy = client.retry_policy().clone();
+        policy.max_retries = retries;
+        client = client.with_retry_policy(policy);
+    }
+    let request = ScanRequest::new(&args.contract_id)
+        .with_network(&args.network)
+        .with_threshold_config(thresholds)
+        .with_persistent_symbols(args.key.clone())
+        .with_persistent_xdr_keys(args.key_xdr.clone())
+        .with_persistent_key_exprs(args.key_expr.clone())
+        .with_ledger_seconds(args.ledger_seconds);
+    Ok((ScanContractUseCase::new(client), request))
+}
+
+/// Verifies that `--output` points to a writable file location without
+/// truncating an existing file. The actual write still happens after a
+/// successful scan and overwrites/truncates the destination.
+fn validate_output_path(path: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    if path.as_os_str().is_empty() {
+        return Err("--output path must not be empty".to_string());
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            return Err(format!(
+                "--output parent directory '{}' does not exist",
+                parent.display()
+            ));
+        }
+    }
+
+    if path.is_dir() {
+        return Err(format!("--output path '{}' is a directory", path.display()));
+    }
+
+    if path.exists() {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("--output path '{}' is not writable: {}", path.display(), e))?;
+    } else {
+        let file = fs::File::create(path)
+            .map_err(|e| format!("--output path '{}' is not writable: {}", path.display(), e))?;
+        drop(file);
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+/// Refuses to write binary Parquet bytes to an interactive terminal.
+#[cfg(feature = "parquet")]
+fn validate_parquet_stdout(has_output: bool, stdout_is_terminal: bool) -> Result<(), &'static str> {
+    if !has_output && stdout_is_terminal {
+        Err("--format parquet writes binary data; use --output <FILE> or redirect stdout to a file")
+    } else {
+        Ok(())
+    }
+}
+
+/// Renders and writes Parquet bytes to `--output` or to piped stdout.
+fn emit_parquet(report: &TTLReport, path: Option<&str>) -> Result<(), String> {
+    #[cfg(feature = "parquet")]
+    {
+        let bytes = render_parquet(report).map_err(|err| err.to_string())?;
+        match path {
+            Some(path) => fs::write(path, &bytes)
+                .map_err(|err| format!("failed to write --output '{}': {}", path, err)),
+            None => std::io::stdout()
+                .lock()
+                .write_all(&bytes)
+                .map_err(|err| format!("failed to write Parquet output to stdout: {}", err)),
+        }
+    }
+    #[cfg(not(feature = "parquet"))]
+    {
+        // Unreachable: run_scan rejects --format parquet before any RPC work
+        // when the feature is disabled.
+        let _ = (report, path);
+        Ok(())
+    }
+}
+
+fn render_recommendation_text(
+    plan: &sentinel_core::domain::RecommendationPlan,
+    contract_id: &str,
+    rpc_url: &str,
+    network: &str,
+) -> String {
+    let mut lines = vec!["Recommendations:".to_string()];
+    for recommendation in &plan.recommendations {
+        match &recommendation.action {
+            RecommendationAction::Extend {
+                ledgers_to_extend,
+                extend_to,
+            } => {
+                if recommendation.durability == sentinel_core::domain::Durability::Persistent {
+                    let raw_key = recommendation
+                        .key
+                        .strip_prefix("persistent:")
+                        .unwrap_or(&recommendation.key);
+                    lines.push(format!(
+                        "  stellar contract extend --id {} --key {} --durability persistent --ledgers-to-extend {} --rpc-url {} --network {}  # target ledger {}",
+                        shell_quote(contract_id),
+                        shell_quote(raw_key),
+                        ledgers_to_extend,
+                        shell_quote(rpc_url),
+                        shell_quote(network),
+                        extend_to
+                    ));
+                } else if recommendation.durability == sentinel_core::domain::Durability::Instance {
+                    lines.push(format!(
+                        "  stellar contract extend --id {} --durability persistent --ledgers-to-extend {} --rpc-url {} --network {}  # contract instance; target ledger {}",
+                        shell_quote(contract_id),
+                        ledgers_to_extend,
+                        shell_quote(rpc_url),
+                        shell_quote(network),
+                        extend_to
+                    ));
+                }
+            }
+            RecommendationAction::Restore => {
+                lines.push(format!("  RESTORE {}", recommendation.key));
+            }
+            RecommendationAction::Unrecoverable => {
+                lines.push(format!("  UNRECOVERABLE {}", recommendation.key));
+            }
+        }
+    }
+    if !plan.network_limit_checked {
+        lines.push(
+            "  Note: network max-entry-TTL was unavailable; a conservative default was used and was not network-validated."
+                .to_string(),
+        );
+    }
+    lines.join("\n")
+}
+
+fn inject_recommendations(
+    output: &str,
+    plan: &sentinel_core::domain::RecommendationPlan,
+) -> Result<String, SentinelError> {
+    let mut value: serde_json::Value = serde_json::from_str(output)
+        .map_err(|error| SentinelError::SerializationError(error.to_string()))?;
+    value["recommendations"] = serde_json::to_value(&plan.recommendations)
+        .map_err(|error| SentinelError::SerializationError(error.to_string()))?;
+    serde_json::to_string_pretty(&value)
+        .map_err(|error| SentinelError::SerializationError(error.to_string()))
+}
+
+pub async fn run_scan(mut args: ScanArgs) -> i32 {
+    if let Err(code) = apply_alias(&mut args) {
+        return code;
+    }
+
+    #[cfg(not(feature = "tui"))]
+    if args.tui {
+        eprintln!(
+            "Error: --tui requires the CLI to be built with the `tui` feature (rebuild with `cargo install --path crates/sentinel-cli --features tui` or `cargo build -p sentinel-cli --features tui`)"
+        );
+        return EXIT_INVALID_ARGS;
+    }
+
+    #[cfg(feature = "tui")]
+    {
+        if args.tui && !std::io::stdout().is_terminal() {
+            eprintln!("Error: --tui requires an interactive TTY, but stdout is not a terminal");
+            return EXIT_INVALID_ARGS;
+        }
+        if args.tui && args.baseline.is_some() {
+            eprintln!("Error: --tui cannot be combined with --baseline");
+            return EXIT_INVALID_ARGS;
+        }
+    }
+
+    let format = args.format.to_lowercase();
+
+    if args.snapshot.is_some()
+        && (args.rpc_url.is_some() || args.rpc_timeout.is_some() || args.rpc_max_retries.is_some())
+    {
+        eprintln!("Error: --snapshot cannot be combined with RPC URL or RPC retry/timeout flags");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.snapshot.is_some() && args.baseline.is_some() {
+        eprintln!("Error: --snapshot cannot be combined with --baseline");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.snapshot.is_some() && (format == "csv" || format == "parquet") {
+        eprintln!("Error: --snapshot is not supported with --format csv or --format parquet");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.recommend && !matches!(format.as_str(), "text" | "json") {
+        eprintln!("Error: --recommend is supported with --format text or json");
+        return EXIT_INVALID_ARGS;
+    }
+    if args.recommend && args.target_days == 0 {
+        eprintln!("Error: --target-days must be greater than 0");
+        return EXIT_INVALID_ARGS;
+    }
+
+    #[cfg(not(feature = "parquet"))]
+    if format == "parquet" {
+        eprintln!(
+            "Error: this binary was built without Parquet support; rebuild with --features parquet"
+        );
+        return EXIT_INVALID_ARGS;
+    }
+
+    #[cfg(feature = "parquet")]
+    if format == "parquet" {
+        if let Err(err) =
+            validate_parquet_stdout(args.output.is_some(), std::io::stdout().is_terminal())
+        {
+            eprintln!("Error: {}", err);
+            return EXIT_INVALID_ARGS;
+        }
+    }
+
+    if format == "csv" && args.baseline.is_some() {
+        eprintln!("Error: --baseline is not supported with --format csv");
+        return EXIT_INVALID_ARGS;
+    }
+
+    if format == "parquet" && args.baseline.is_some() {
+        eprintln!("Error: --baseline is not supported with --format parquet");
+        return EXIT_INVALID_ARGS;
+    }
+
+    if let Some(ref path) = args.output {
+        if let Err(err) = validate_output_path(path) {
+            eprintln!("Error: {}", err);
+            return EXIT_INVALID_ARGS;
+        }
+    }
+
     // 1. Validate argument bounds before making any RPC calls
     if let Some(timeout) = args.rpc_timeout {
         if !(1..=120).contains(&timeout) {
@@ -153,6 +435,11 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         }
     }
 
+    if let Err(error) = validate_sample_window(args.sample_window) {
+        eprintln!("Error: --sample-window {}", error);
+        return EXIT_INVALID_ARGS;
+    }
+
     let baseline_snapshot = if let Some(ref path) = args.baseline {
         match load_and_validate_baseline(path, &args.contract_id, &args.network) {
             Ok(s) => Some(s),
@@ -165,14 +452,6 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         None
     };
 
-    let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
-        Ok(url) => url,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return EXIT_INVALID_ARGS;
-        }
-    };
-
     let threshold_config = match resolve_threshold_config(args.threshold, args.critical_threshold) {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -181,56 +460,190 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
         }
     };
 
-    let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
-    let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url, rpc_timeout);
-    if let Some(retries) = args.rpc_max_retries {
-        let mut policy = rpc_client.retry_policy().clone();
-        policy.max_retries = retries;
-        rpc_client = rpc_client.with_retry_policy(policy);
-    }
-
-    let usecase = ScanContractUseCase::new(rpc_client);
-
     let mut request = ScanRequest::new(&args.contract_id)
         .with_network(&args.network)
         .with_threshold_config(threshold_config)
         .with_persistent_symbols(args.key)
         .with_persistent_xdr_keys(args.key_xdr)
-        .with_persistent_key_exprs(args.key_expr);
+        .with_persistent_key_exprs(args.key_expr)
+        .with_sample_window(args.sample_window);
 
-    if let Some(ls) = args.ledger_seconds {
-        request = request.with_ledger_seconds(Some(ls));
+    if let Some(ledger_seconds) = args.ledger_seconds {
+        request = request.with_ledger_seconds(Some(ledger_seconds));
     }
 
-    let report = match usecase.execute(request).await {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("Error: {}", err);
-            return match err {
-                SentinelError::InvalidContractAddress(_)
-                | SentinelError::InvalidXdrKey(_)
-                | SentinelError::InvalidThresholdConfig(_)
-                | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
-                SentinelError::RpcConnectionTimeout(_)
-                | SentinelError::RpcResponseError { .. }
-                | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
-                _ => EXIT_INVALID_ARGS,
-            };
+    let (report, network_reader, rpc_url) = if let Some(snapshot_path) = args.snapshot.as_deref() {
+        let replay = match sentinel_core::adapters::ReplayReader::replay(
+            snapshot_path,
+            network_passphrase(&args.network),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let rpc_url = match resolve_rpc_url(&args.network, None) {
+            Ok(url) => url,
+            Err(err) if args.recommend => {
+                eprintln!("Error: {}", err);
+                return EXIT_INVALID_ARGS;
+            }
+            Err(_) => String::new(),
+        };
+        match ScanContractUseCase::new(replay).execute(request).await {
+            Ok(report) => (report, None, rpc_url),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        let rpc_url = match resolve_rpc_url(&args.network, args.rpc_url.as_deref()) {
+            Ok(url) => url,
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let rpc_timeout = Duration::from_secs(args.rpc_timeout.unwrap_or(10));
+        let mut rpc_client = SorobanRpcClient::new_with_timeout(rpc_url.clone(), rpc_timeout);
+        if let Some(retries) = args.rpc_max_retries {
+            let mut policy = rpc_client.retry_policy().clone();
+            policy.max_retries = retries;
+            rpc_client = rpc_client.with_retry_policy(policy);
+        }
+        let network_reader = rpc_client.clone();
+        match ScanContractUseCase::new(rpc_client).execute(request).await {
+            Ok(report) => (report, Some(network_reader), rpc_url),
+            Err(err) => {
+                eprintln!("Error: {err}");
+                return match err {
+                    SentinelError::InvalidContractAddress(_)
+                    | SentinelError::InvalidXdrKey(_)
+                    | SentinelError::InvalidThresholdConfig(_)
+                    | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
+                    SentinelError::RpcConnectionTimeout(_)
+                    | SentinelError::RpcResponseError { .. }
+                    | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
+                    _ => EXIT_INVALID_ARGS,
+                };
+            }
         }
     };
+
+    if let Some(webhook) = args.alert_webhook.as_deref() {
+        let notifier = match WebhookAlertNotifier::new(webhook) {
+            Ok(notifier) => notifier,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let kind = match args.alert_kind.as_str() {
+            "slack" => AlertKind::Slack,
+            "discord" => AlertKind::Discord,
+            _ => return EXIT_INVALID_ARGS,
+        };
+        let min_level = match args.alert_min_level.as_str() {
+            "warn" => AlertMinLevel::Warn,
+            "critical" => AlertMinLevel::Critical,
+            _ => return EXIT_INVALID_ARGS,
+        };
+        if let Err(_error) = notifier.notify(&report, kind, min_level).await {
+            eprintln!("Warning: alert delivery failed");
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    if args.tui {
+        return crate::commands::tui::run_tui(report, threshold_config, &args.network);
+    }
+    crate::telemetry::record_scan_metrics(&report);
 
     let baseline_diff = baseline_snapshot
         .as_ref()
         .map(|b| compare_reports(&report, b));
 
-    let output_result = match args.format.to_lowercase().as_str() {
-        "text" => Ok(render_text_with_diff(&report, baseline_diff.as_ref())),
-        "json" => render_json_with_diff(&report, baseline_diff.clone()),
+    let recommendation_plan = if args.recommend {
+        let max_ttl = match network_reader.as_ref() {
+            Some(reader) => fetch_network_limits(reader)
+                .await
+                .ok()
+                .map(|limits| limits.max_entry_ttl),
+            None => None,
+        };
+        Some(build_recommendation_plan(
+            &report.entries,
+            report.latest_ledger,
+            args.target_days,
+            report.ledger_velocity_seconds,
+            max_ttl,
+        ))
+    } else {
+        None
+    };
+
+    let diff_has_regression = baseline_diff
+        .as_ref()
+        .map(|d| d.summary.has_regression)
+        .unwrap_or(false);
+    let final_exit_code = if args.fail_on_regression && diff_has_regression {
+        EXIT_CRITICAL_OR_ARCHIVED
+    } else {
+        match report.overall_status {
+            RiskLevel::Ok => EXIT_OK,
+            RiskLevel::Warn => EXIT_WARN,
+            RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
+        }
+    };
+
+    if format == "parquet" {
+        return match emit_parquet(&report, args.output.as_deref()) {
+            Ok(()) => final_exit_code,
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                EXIT_INVALID_ARGS
+            }
+        };
+    }
+
+    let output_result = match format.as_str() {
+        "text" => {
+            let no_color = args.no_color || args.output.is_some();
+            let mut output =
+                render_text_with_diff_and_options(&report, baseline_diff.as_ref(), no_color);
+            if let Some(plan) = recommendation_plan.as_ref() {
+                output.push('\n');
+                output.push_str(&render_recommendation_text(
+                    plan,
+                    &args.contract_id,
+                    &rpc_url,
+                    &args.network,
+                ));
+            }
+            Ok(output)
+        }
+        "json" => match render_json_with_diff(&report, baseline_diff.clone()) {
+            Ok(rendered) => match recommendation_plan.as_ref() {
+                Some(plan) => inject_recommendations(&rendered, plan),
+                None => Ok(rendered),
+            },
+            Err(error) => Err(error),
+        },
+        "ndjson" => render_ndjson(&report),
+        "csv" => render_csv(&report),
         "sarif" => render_sarif(&report),
+        "markdown" => Ok(render_markdown(&report)),
         other => {
+            let supported = if cfg!(feature = "parquet") {
+                "text, json, ndjson, csv, parquet, sarif, markdown"
+            } else {
+                "text, json, ndjson, csv, sarif, markdown"
+            };
             eprintln!(
-                "Error: Unsupported format '{}'. Supported formats: text, json, sarif",
-                other
+                "Error: Unsupported format '{}'. Supported formats: {}",
+                other, supported
             );
             return EXIT_INVALID_ARGS;
         }
@@ -238,22 +651,28 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
 
     match output_result {
         Ok(output) => {
-            println!("{}", output);
-
-            let diff_has_regression = baseline_diff
-                .as_ref()
-                .map(|d| d.summary.has_regression)
-                .unwrap_or(false);
-
-            if args.fail_on_regression && diff_has_regression {
-                EXIT_CRITICAL_OR_ARCHIVED
-            } else {
-                match report.overall_status {
-                    RiskLevel::Ok => EXIT_OK,
-                    RiskLevel::Warn => EXIT_WARN,
-                    RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
+            if let Some(path) = args.output.as_deref() {
+                let contents = if output.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", output.trim_end_matches('\n'))
+                };
+                if let Err(err) = fs::write(path, contents) {
+                    eprintln!("Error: failed to write --output '{}': {}", path, err);
+                    return EXIT_INVALID_ARGS;
                 }
+            } else if format == "csv" {
+                // The CSV writer already terminates every record; avoid a blank line.
+                println!("{}", output.trim_end_matches('\n'));
+            } else if format == "ndjson" {
+                if !output.is_empty() {
+                    println!("{}", output.trim_end_matches('\n'));
+                }
+            } else {
+                println!("{}", output);
             }
+
+            final_exit_code
         }
         Err(err) => {
             eprintln!("Error: {}", err);
@@ -262,9 +681,96 @@ pub async fn run_scan(args: ScanArgs) -> i32 {
     }
 }
 
+/// Returns the network passphrase used by snapshot replay compatibility checks.
+pub fn network_passphrase(network: &str) -> &'static str {
+    match network.to_lowercase().as_str() {
+        "testnet" => "Test SDF Network ; September 2015",
+        "mainnet" => "Public Global Stellar Network ; September 2015",
+        "futurenet" => "Test SDF Future Network ; October 2022",
+        "local" => "Standalone Network ; February 2017",
+        _ => "",
+    }
+}
+
+/// Resolves a contract alias into a `C...` strkey before the scan starts.
+///
+/// A valid strkey passes through untouched. Aliases are read from the TOML file
+/// named by `SENTINEL_ALIASES`, or from `./sentinel-aliases.toml` when present:
+///
+/// ```toml
+/// [aliases]
+/// treasury = "C..."
+/// ```
+///
+/// Unknown targets without a close match fall through to the normal
+/// "Invalid contract address" handling.
+fn apply_alias(args: &mut ScanArgs) -> Result<(), i32> {
+    use sentinel_core::domain::alias::{AliasError, AliasRegistry};
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AliasFile {
+        #[serde(default)]
+        aliases: std::collections::BTreeMap<String, String>,
+    }
+
+    let target = args.contract_id.trim().to_string();
+    if stellar_strkey::Contract::from_string(&target).is_ok() {
+        return Ok(());
+    }
+
+    let path = match std::env::var_os("SENTINEL_ALIASES").filter(|value| !value.is_empty()) {
+        Some(value) => std::path::PathBuf::from(value),
+        None => {
+            let default = std::path::PathBuf::from("sentinel-aliases.toml");
+            if !default.is_file() {
+                return Ok(());
+            }
+            default
+        }
+    };
+
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        eprintln!("Error: cannot read alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+    let file: AliasFile = toml::from_str(&text).map_err(|error| {
+        eprintln!("Error: invalid alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+    let registry = AliasRegistry::from_pairs(file.aliases).map_err(|error| {
+        eprintln!("Error: invalid alias file {}: {error}", path.display());
+        EXIT_INVALID_ARGS
+    })?;
+
+    match registry.resolve(&target) {
+        Ok(contract_id) => {
+            args.contract_id = contract_id;
+            Ok(())
+        }
+        Err(error @ AliasError::UnknownWithSuggestion { .. }) => {
+            eprintln!("Error: Invalid contract address: {error}");
+            Err(EXIT_INVALID_ARGS)
+        }
+        Err(_) => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "parquet")]
+    #[test]
+    fn test_validate_parquet_stdout() {
+        assert!(validate_parquet_stdout(true, true).is_ok());
+        assert!(validate_parquet_stdout(false, false).is_ok());
+        assert!(validate_parquet_stdout(true, false).is_ok());
+        assert_eq!(
+            validate_parquet_stdout(false, true),
+            Err("--format parquet writes binary data; use --output <FILE> or redirect stdout to a file")
+        );
+    }
 
     #[test]
     fn test_resolve_rpc_url_presets() {

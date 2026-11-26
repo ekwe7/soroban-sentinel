@@ -343,4 +343,19 @@ impl LedgerReader for MultiRpcFailoverReader {
         })
         .await
     }
+
+    async fn get_ledger_close_samples(
+        &self,
+        latest_ledger: u32,
+        sample_window: u32,
+    ) -> SentinelResult<Option<Vec<crate::domain::burn_rate::LedgerCloseSample>>> {
+        self.execute(move |reader| {
+            Box::pin(async move {
+                reader
+                    .get_ledger_close_samples(latest_ledger, sample_window)
+                    .await
+            })
+        })
+        .await
+    }
 }

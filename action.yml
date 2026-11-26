@@ -1,0 +1,154 @@
+name: Soroban Sentinel TTL Scan
+description: Run a read-only Soroban storage TTL scan and publish a Markdown report.
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  contract-id:
+    description: Soroban contract address
+    required: true
+  network:
+    description: testnet, mainnet, futurenet, or local
+    required: false
+    default: testnet
+  rpc-url:
+    description: Optional custom RPC endpoint
+    required: false
+  keys:
+    description: Newline-separated persistent key symbols
+    required: false
+  threshold:
+    description: Warning TTL threshold in ledgers
+    required: false
+    default: "120960"
+  critical-threshold:
+    description: Critical TTL threshold in ledgers
+    required: false
+  version:
+    description: Release tag or latest
+    required: false
+    default: latest
+  release-base-url:
+    description: Optional base URL for self-test release assets
+    required: false
+  fail-on:
+    description: warn, critical, or never
+    required: false
+    default: warn
+
+outputs:
+  status:
+    description: Sentinel risk status
+    value: ${{ steps.scan.outputs.status }}
+  exit-code:
+    description: Sentinel process exit code
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify Sentinel binary
+      shell: bash
+      env:
+        ACTION_VERSION: ${{ inputs.version }}
+        RELEASE_BASE_URL: ${{ inputs.release-base-url }}
+        GITHUB_API_TOKEN: ${{ github.token }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset="sentinel-x86_64-unknown-linux-gnu.tar.gz" ;;
+          Linux-ARM64) asset="sentinel-aarch64-unknown-linux-gnu.tar.gz" ;;
+          macOS-X64) asset="sentinel-x86_64-apple-darwin.tar.gz" ;;
+          macOS-ARM64) asset="sentinel-aarch64-apple-darwin.tar.gz" ;;
+          *) echo "Unsupported runner: $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        if [[ -n "${RELEASE_BASE_URL:-}" ]]; then
+          base="$RELEASE_BASE_URL"
+        else
+          if [[ "$ACTION_VERSION" == "latest" ]]; then
+            latest_url="https://api.github.com/repos/ekwe7/soroban-sentinel/releases/latest"
+            if [[ -n "${GITHUB_API_TOKEN:-}" ]]; then
+              release_json=$(curl -fsSL -H "Authorization: Bearer $GITHUB_API_TOKEN" "$latest_url") || release_json=""
+            else
+              release_json=$(curl -fsSL "$latest_url") || release_json=""
+            fi
+            tag=$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null) || tag=""
+            if [[ -z "$tag" ]]; then
+              echo "Could not resolve the latest Sentinel release from $latest_url; set the 'version' input to a release tag." >&2
+              exit 1
+            fi
+          else
+            tag="$ACTION_VERSION"
+          fi
+          base="https://github.com/ekwe7/soroban-sentinel/releases/download/$tag"
+        fi
+        curl -fsSLo "/tmp/$asset" "$base/$asset"
+        curl -fsSLo /tmp/SHA256SUMS "$base/SHA256SUMS"
+        cd /tmp
+        checksum_line=$(awk -v asset="$asset" '{ name = $2; sub(/^\.\//, "", name); if (name == asset) { print; exit } }' SHA256SUMS)
+        if [[ -z "$checksum_line" ]]; then
+          echo "No SHA256SUMS entry found for $asset" >&2
+          exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          printf '%s\n' "$checksum_line" | sha256sum -c -
+        else
+          printf '%s\n' "$checksum_line" | shasum -a 256 -c -
+        fi
+        tar -xzf "$asset"
+        install -m 0755 sentinel "$RUNNER_TEMP/sentinel"
+        echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+    - name: Run TTL scan
+      id: scan
+      shell: bash
+      env:
+        CONTRACT_ID: ${{ inputs.contract-id }}
+        NETWORK: ${{ inputs.network }}
+        RPC_URL: ${{ inputs.rpc-url }}
+        KEYS: ${{ inputs.keys }}
+        THRESHOLD: ${{ inputs.threshold }}
+        CRITICAL_THRESHOLD: ${{ inputs.critical-threshold }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set +e
+        args=(scan "$CONTRACT_ID" --network "$NETWORK" --threshold "$THRESHOLD" --format json)
+        [[ -n "$RPC_URL" ]] && args+=(--rpc-url "$RPC_URL")
+        [[ -n "$CRITICAL_THRESHOLD" ]] && args+=(--critical-threshold "$CRITICAL_THRESHOLD")
+        while IFS= read -r key; do
+          [[ -n "$key" ]] && args+=(--key "$key")
+        done <<< "$KEYS"
+        output=$("$RUNNER_TEMP/sentinel" "${args[@]}" 2>"$RUNNER_TEMP/sentinel-error")
+        code=$?
+        if [[ $code -ne 0 && $code -ne 1 && $code -ne 2 ]]; then
+          status=RPC_FAILURE
+        else
+          status=$(printf '%s' "$output" | python3 -c 'import json,sys; print(json.load(sys.stdin)["summary"])' 2>/dev/null || echo "UNKNOWN")
+          if [[ $code -eq 2 ]]; then status=CRITICAL
+          elif [[ $code -eq 1 ]]; then status=WARN
+          else status=OK
+          fi
+        fi
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          markdown_args=(scan "$CONTRACT_ID" --network "$NETWORK" --threshold "$THRESHOLD" --format markdown)
+          [[ -n "$RPC_URL" ]] && markdown_args+=(--rpc-url "$RPC_URL")
+          [[ -n "$CRITICAL_THRESHOLD" ]] && markdown_args+=(--critical-threshold "$CRITICAL_THRESHOLD")
+          while IFS= read -r key; do
+            [[ -n "$key" ]] && markdown_args+=(--key "$key")
+          done <<< "$KEYS"
+          markdown=$("$RUNNER_TEMP/sentinel" "${markdown_args[@]}" 2>/dev/null || true)
+          printf '%s\n' "$markdown" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        case "$FAIL_ON" in
+          never) [[ $code -lt 10 ]] && exit 0; exit "$code" ;;
+          warn) [[ $code -eq 0 ]] && exit 0; exit "$code" ;;
+          critical) [[ $code -eq 0 || $code -eq 1 ]] && exit 0; exit "$code" ;;
+          *) echo "Invalid fail-on '$FAIL_ON'; use warn, critical, or never" >&2; exit 10 ;;
+        esac

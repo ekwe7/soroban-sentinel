@@ -176,7 +176,7 @@ The following capabilities are explicitly deferred to post-MVP releases:
 * ❌ Rent simulation (`sentinel forecast`).
 * ❌ Autonomous keeper transaction signing (`sentinel bump`).
 * ❌ Historical contract event parsing (`getEvents`).
-* ❌ State restoration transactions (`RestoreFootprintOp`).
+* ❌ Autonomous signing/submission of restoration transactions. Manual planning via `sentinel restore` (`RestoreFootprintOp`, Issue #40) is available; signing and submission remain the operator's responsibility.
 
 ---
 
