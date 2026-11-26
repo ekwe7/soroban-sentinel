@@ -104,6 +104,8 @@ async fn main() {
         Commands::TraceRoute(args) => commands::trace_route::run_trace_route(args).await,
         Commands::Watch(args) => commands::watch::run_watch(*args).await,
         Commands::Forecast(args) => commands::run_forecast(args).await,
+        Commands::Redact(args) => commands::run_redact(args),
+        Commands::DryRun(args) => commands::run_dry_run(args).await,
         Commands::EstimateGas(args) => commands::run_estimate_gas(args).await,
         Commands::Trend(args) => commands::run_trend(args),
     };

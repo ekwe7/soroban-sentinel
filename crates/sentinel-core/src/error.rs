@@ -12,6 +12,9 @@ pub enum SentinelError {
     #[error("RPC connection timeout: {0}")]
     RpcConnectionTimeout(String),
 
+    #[error("RPC circuit breaker is open; retry after the reset timeout")]
+    CircuitBreakerOpen,
+
     #[error("RPC response error (code: {code}): {message}")]
     RpcResponseError { code: i64, message: String },
 

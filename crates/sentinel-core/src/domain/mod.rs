@@ -13,6 +13,7 @@ pub mod durability_migration;
 pub mod entry;
 pub mod envelope_packer;
 pub mod fee_bump;
+pub mod fee_optimizer;
 pub mod footprint;
 pub mod footprint_fees;
 pub mod histogram;
@@ -64,6 +65,7 @@ pub use envelope_packer::{
 pub use fee_bump::{
     recommend_inclusion_fee, FeeBumpError, FeePercentiles, FeeRecommendation, FeeUrgency,
 };
+pub use fee_optimizer::{optimize_bump_batch, FeeOptimizerEntry, ScheduledExtension, UrgencyTier};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
 pub use footprint_fees::{
     billed_kib_units, classify_ledger_key, scale_bytes_fee, stroops_to_xlm, xdr_encoded_len,
