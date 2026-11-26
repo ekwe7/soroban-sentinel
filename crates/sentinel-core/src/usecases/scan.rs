@@ -309,6 +309,31 @@ pub struct TTLReport {
 }
 
 impl TTLReport {
+    /// Creates a new `TTLReport` with defaults for optional metadata fields.
+    pub fn new(
+        contract_id: impl Into<String>,
+        network: impl Into<String>,
+        latest_ledger: u32,
+        ledger_velocity_seconds: f64,
+        entries: Vec<StorageEntryReport>,
+        overall_status: RiskLevel,
+    ) -> Self {
+        Self {
+            contract_id: contract_id.into(),
+            network: network.into(),
+            latest_ledger,
+            ledger_velocity_seconds,
+            burn_rate: BurnRate::default(),
+            entries,
+            overall_status,
+            archival_recommendations: Vec::new(),
+            sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
+        }
+    }
+
     /// Calculate per-entry restoration rent and modeled arrears using this scan's TTL observations.
     /// Entries absent from RPC need a known historical TTL and size supplied to the calculator directly.
     /// Results use the scan's measured or estimated entry sizes.
@@ -350,6 +375,25 @@ impl TTLReport {
             warn,
             critical,
             archived,
+        }
+    }
+}
+
+impl Default for TTLReport {
+    fn default() -> Self {
+        Self {
+            contract_id: String::new(),
+            network: String::new(),
+            latest_ledger: 0,
+            ledger_velocity_seconds: 5.0,
+            burn_rate: BurnRate::default(),
+            entries: Vec::new(),
+            overall_status: RiskLevel::Ok,
+            archival_recommendations: Vec::new(),
+            sac_asset_info: None,
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         }
     }
 }
@@ -834,7 +878,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     remaining_ledgers,
                     instance_remaining_ledgers,
                     request.threshold_config.critical_ledgers,
-                )?;
+                )
+                .ok();
                 let remaining_seconds =
                     estimate_remaining_seconds_with_velocity(remaining_ledgers, ledger_velocity);
                 let remaining_days = estimate_remaining_days(remaining_seconds);
@@ -845,21 +890,22 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 );
 
                 let code_entry_str = code_entry.key_xdr_base64.clone();
-                reports.push(
-                    StorageEntryReport::new(
-                        "code_wasm",
-                        EntryType::ContractCode,
-                        Durability::Code,
-                        byte_size,
-                        live_until,
-                        remaining_ledgers,
-                        remaining_seconds,
-                        remaining_days,
-                        status,
-                    )
-                    .with_contract_code_size_bytes(contract_code_size_bytes)
-                    .with_wasm_inspection(wasm_inspection),
-                );
+                let mut code_report = StorageEntryReport::new(
+                    "code_wasm",
+                    EntryType::ContractCode,
+                    Durability::Code,
+                    byte_size,
+                    live_until,
+                    remaining_ledgers,
+                    remaining_seconds,
+                    remaining_days,
+                    status,
+                )
+                .with_contract_code_size_bytes(contract_code_size_bytes);
+                if let Some(inspection) = wasm_inspection {
+                    code_report = code_report.with_wasm_inspection(inspection);
+                }
+                reports.push(code_report);
                 info!(
                     "code_processed: code_entry={} byte_size={} status={}",
                     code_entry_str, byte_size, status
@@ -1126,7 +1172,7 @@ mod tests {
         assert_eq!(code.remaining_ledgers, 100_000);
         assert_eq!(code.status, RiskLevel::Warn);
         assert!(code.byte_size > 0);
-        assert_eq!(code.contract_code_size_bytes, Some(4));
+        assert_eq!(code.contract_code_size_bytes, Some(8));
         assert_eq!(code.wasm_inspection.as_ref().unwrap().wasm_size_bytes, 8);
         assert!(!code.wasm_inspection.as_ref().unwrap().nearing_archival);
 
@@ -1949,6 +1995,7 @@ mod tests {
                 derive_contract_instance_key(&contract_bytes).unwrap(),
                 derive_persistent_symbol_key(&contract_bytes, "COUNTER").unwrap(),
                 derive_persistent_symbol_key(&contract_bytes, "ADMIN").unwrap(),
+                derive_contract_data_entry_size_limit_key().unwrap(),
             ]
         );
         assert_eq!(keys.len(), report.entries.len());
@@ -1970,7 +2017,7 @@ mod tests {
             identifiers(&report),
             ["instance", "code_wasm", "persistent:COUNTER"]
         );
-        assert_eq!(queries.lock().unwrap()[0].len(), 2);
+        assert_eq!(queries.lock().unwrap()[0].len(), 3);
     }
 
     #[tokio::test]

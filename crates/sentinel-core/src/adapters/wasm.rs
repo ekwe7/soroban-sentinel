@@ -274,7 +274,7 @@ mod tests {
     fn append_xdr_string(out: &mut Vec<u8>, value: &str) {
         append_u32(out, value.len() as u32);
         out.extend_from_slice(value.as_bytes());
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
     }
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn inspection_reads_soroban_sections_and_metadata() {
         let wasm = test_module();
-        let report = inspect_wasm(&wasm, 100, 120, 34_560).expect("valid WASM");
+        let report = inspect_wasm(&wasm, 100, 120, 50).expect("valid WASM");
 
         assert_eq!(report.wasm_size_bytes, wasm.len());
         assert_eq!(report.interface_version.unwrap().protocol, 25);
