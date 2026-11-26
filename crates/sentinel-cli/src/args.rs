@@ -87,6 +87,12 @@ pub enum Commands {
     /// Compare two saved JSON TTL reports without using RPC
     DiffReports(DiffReportsArgs),
 
+    /// Export the monitored keys in a saved JSON TTL report as sentinel.toml or JSON
+    ExportKeys(ExportKeysArgs),
+
+    /// Decode a base64 LedgerEntry, LedgerEntryData, or LedgerKey XDR value
+    Explain(ExplainArgs),
+
     /// Compare a contract's storage health across two Stellar networks
     DiffNetworks(DiffNetworksArgs),
 
@@ -416,6 +422,38 @@ pub struct DiffReportsArgs {
     /// Return exit code 2 when a risk regression or removal is found
     #[arg(long)]
     pub fail_on_regression: bool,
+}
+
+/// Command-line arguments for `sentinel export-keys`.
+#[derive(Args, Debug, Clone)]
+pub struct ExportKeysArgs {
+    /// Saved JSON TTL report (from `sentinel scan --format json`)
+    #[arg(long, value_name = "REPORT_JSON")]
+    pub input: std::path::PathBuf,
+
+    /// Output format
+    #[arg(long, default_value = "toml", value_parser = ["toml", "json"])]
+    pub format: String,
+}
+
+/// Command-line arguments for `sentinel explain`.
+#[derive(Args, Debug, Clone)]
+pub struct ExplainArgs {
+    /// Base64 XDR for a LedgerEntry, LedgerEntryData, or LedgerKey
+    #[arg(
+        value_name = "BASE64_XDR",
+        required_unless_present = "stdin",
+        conflicts_with = "stdin"
+    )]
+    pub xdr: Option<String>,
+
+    /// Read the base64 XDR from standard input
+    #[arg(long)]
+    pub stdin: bool,
+
+    /// Output format
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
 }
 
 /// Arguments for `sentinel key-diff`.

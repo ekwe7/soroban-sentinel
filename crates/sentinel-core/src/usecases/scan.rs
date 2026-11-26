@@ -348,6 +348,32 @@ pub fn fuzz_compute_byte_size(entry_xdr_base64: &str) -> usize {
     compute_byte_size(entry_xdr_base64)
 }
 
+/// Collapse descriptors that resolve to the same canonical `LedgerKey` XDR.
+///
+/// Each key keeps the position of its first appearance. When an identifier
+/// derived from a raw `persistent_xdr:` value collides with a readable
+/// `persistent:` identifier, the readable one is kept.
+fn dedup_persistent_descriptors(descriptors: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut positions: HashMap<String, usize> = HashMap::with_capacity(descriptors.len());
+    let mut unique: Vec<(String, String)> = Vec::with_capacity(descriptors.len());
+    for (ident, key_xdr) in descriptors {
+        match positions.get(&key_xdr) {
+            Some(&index) => {
+                let existing = &mut unique[index].0;
+                if existing.starts_with("persistent_xdr:") && !ident.starts_with("persistent_xdr:")
+                {
+                    *existing = ident;
+                }
+            }
+            None => {
+                positions.insert(key_xdr.clone(), unique.len());
+                unique.push((ident, key_xdr));
+            }
+        }
+    }
+    unique
+}
+
 /// Application orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 pub struct ScanContractUseCase<R: LedgerReader> {
     reader: R,
@@ -464,6 +490,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             let key_xdr = derive_persistent_key_from_scval(&contract_id_bytes, scval)?;
             persistent_descriptors.push((format!("persistent:{}", expr), key_xdr));
         }
+        let persistent_descriptors = dedup_persistent_descriptors(persistent_descriptors);
         info!(
             persistent_key_count = persistent_descriptors.len(),
             "persistent_keys_derived"
@@ -1309,6 +1336,183 @@ mod tests {
             .find(|e| e.key_identifier == "code_wasm")
             .unwrap();
         assert!(code_rep.instance_storage_keys.is_empty());
+    }
+
+    /// Delegates to `MockLedgerReader` while recording every `get_ledger_entries` batch.
+    #[derive(Clone, Default)]
+    struct RecordingReader {
+        inner: MockLedgerReader,
+        queries: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LedgerReader for RecordingReader {
+        async fn get_latest_ledger(
+            &self,
+        ) -> SentinelResult<crate::ports::reader::LatestLedgerInfo> {
+            self.inner.get_latest_ledger().await
+        }
+
+        async fn get_ledger_entries(
+            &self,
+            keys_xdr_base64: &[String],
+        ) -> SentinelResult<Vec<RawLedgerEntry>> {
+            self.queries.lock().unwrap().push(keys_xdr_base64.to_vec());
+            self.inner.get_ledger_entries(keys_xdr_base64).await
+        }
+    }
+
+    /// Reader with a live instance, its code entry, and persistent `COUNTER`/`ADMIN` entries.
+    fn dedup_fixture(contract_bytes: [u8; 32]) -> RecordingReader {
+        let wasm_bytes = [contract_bytes[0].wrapping_add(1); 32];
+        let instance_key = derive_contract_instance_key(&contract_bytes).unwrap();
+        let code_key = derive_contract_code_key(&wasm_bytes).unwrap();
+        let mut inner = MockLedgerReader::new()
+            .with_latest_ledger(5_400_000, 22)
+            .with_entry(RawLedgerEntry::new(
+                &instance_key,
+                make_test_instance_xdr(contract_bytes, wasm_bytes),
+                5_800_000,
+                5_390_000,
+            ))
+            .with_entry(RawLedgerEntry::new(
+                &code_key,
+                make_test_code_xdr(wasm_bytes, &[1, 2, 3]),
+                5_800_000,
+                5_390_000,
+            ));
+        for symbol in ["COUNTER", "ADMIN"] {
+            inner = inner.with_entry(RawLedgerEntry::new(
+                derive_persistent_symbol_key(&contract_bytes, symbol).unwrap(),
+                make_test_persistent_symbol_xdr(contract_bytes, symbol, 1),
+                5_800_000,
+                5_390_000,
+            ));
+        }
+        RecordingReader {
+            inner,
+            ..RecordingReader::default()
+        }
+    }
+
+    fn symbol_scval_xdr(symbol: &str) -> String {
+        ScVal::Symbol(ScSymbol(symbol.try_into().unwrap()))
+            .to_xdr_base64(Limits::none())
+            .unwrap()
+    }
+
+    fn identifiers(report: &TTLReport) -> Vec<&str> {
+        report
+            .entries
+            .iter()
+            .map(|e| e.key_identifier.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_scan_deduplicates_repeated_symbol_keys() {
+        let contract_bytes = [60u8; 32];
+        let reader = dedup_fixture(contract_bytes);
+        let queries = reader.queries.clone();
+        let usecase = ScanContractUseCase::new(reader);
+        let request = ScanRequest::new(stellar_strkey::Contract(contract_bytes).to_string())
+            .with_persistent_symbols(vec![
+                "COUNTER".into(),
+                "COUNTER".into(),
+                "ADMIN".into(),
+                "COUNTER".into(),
+            ]);
+
+        let (report, keys) = usecase.execute_with_keys(request).await.unwrap();
+
+        assert_eq!(
+            identifiers(&report),
+            [
+                "instance",
+                "code_wasm",
+                "persistent:COUNTER",
+                "persistent:ADMIN"
+            ]
+        );
+        let initial_batch = &queries.lock().unwrap()[0];
+        assert_eq!(
+            initial_batch,
+            &vec![
+                derive_contract_instance_key(&contract_bytes).unwrap(),
+                derive_persistent_symbol_key(&contract_bytes, "COUNTER").unwrap(),
+                derive_persistent_symbol_key(&contract_bytes, "ADMIN").unwrap(),
+            ]
+        );
+        assert_eq!(keys.len(), report.entries.len());
+    }
+
+    #[tokio::test]
+    async fn test_scan_prefers_symbol_identifier_over_equivalent_xdr_key() {
+        let contract_bytes = [61u8; 32];
+        let reader = dedup_fixture(contract_bytes);
+        let queries = reader.queries.clone();
+        let usecase = ScanContractUseCase::new(reader);
+        let request = ScanRequest::new(stellar_strkey::Contract(contract_bytes).to_string())
+            .with_persistent_symbols(vec!["COUNTER".into()])
+            .with_persistent_xdr_keys(vec![symbol_scval_xdr("COUNTER")]);
+
+        let report = usecase.execute(request).await.unwrap();
+
+        assert_eq!(
+            identifiers(&report),
+            ["instance", "code_wasm", "persistent:COUNTER"]
+        );
+        assert_eq!(queries.lock().unwrap()[0].len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_scan_readable_identifier_replaces_earlier_xdr_in_first_position() {
+        let contract_bytes = [62u8; 32];
+        let usecase = ScanContractUseCase::new(dedup_fixture(contract_bytes));
+        // XDR keys are derived before key expressions, so the raw COUNTER key
+        // appears first and the later readable expression must replace its
+        // identifier without moving it.
+        let request = ScanRequest::new(stellar_strkey::Contract(contract_bytes).to_string())
+            .with_persistent_xdr_keys(vec![symbol_scval_xdr("COUNTER"), symbol_scval_xdr("ADMIN")])
+            .with_persistent_key_exprs(vec!["sym:COUNTER".into()]);
+
+        let report = usecase.execute(request).await.unwrap();
+
+        assert_eq!(
+            identifiers(&report),
+            [
+                "instance",
+                "code_wasm",
+                "persistent:sym:COUNTER",
+                &format!("persistent_xdr:{}", symbol_scval_xdr("ADMIN")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scan_summary_counts_each_deduplicated_key_once() {
+        let contract_bytes = [63u8; 32];
+        let usecase = ScanContractUseCase::new(dedup_fixture(contract_bytes));
+        let request = ScanRequest::new(stellar_strkey::Contract(contract_bytes).to_string())
+            .with_persistent_symbols(vec!["COUNTER".into(), "MISSING".into(), "MISSING".into()])
+            .with_persistent_xdr_keys(vec![
+                symbol_scval_xdr("COUNTER"),
+                symbol_scval_xdr("MISSING"),
+            ]);
+
+        let report = usecase.execute(request).await.unwrap();
+
+        assert_eq!(
+            report.summary(),
+            ReportSummary {
+                total_entries: 4,
+                ok: 3,
+                warn: 0,
+                critical: 0,
+                archived: 1,
+            }
+        );
+        assert_eq!(report.overall_status, RiskLevel::Archived);
     }
 
     #[tokio::test]
