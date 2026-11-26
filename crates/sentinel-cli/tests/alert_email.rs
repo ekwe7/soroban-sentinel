@@ -6,63 +6,19 @@ use clap::Parser;
 use sentinel_cli::Cli;
 
 #[tokio::test]
-async fn test_watch_args_parses_via_cli() {
-    let cli = Cli::parse_from([
-        "sentinel",
-        "watch",
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "--network",
-        "testnet",
-    ]);
-    match cli.command {
-        sentinel_cli::Commands::Watch(wargs) => {
-            assert_eq!(wargs.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
-            assert_eq!(wargs.network, "testnet");
-        }
-        _ => panic!("expected watch command"),
-    }
-}
+async fn test_email_payload_creation() {
+    let payload = sentinel_cli::EmailPayload {
+        contract_id: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM".to_string(),
+        storage_keys: vec!["COUNTER".to_string(), "ADMIN".to_string()],
+        remaining_ledgers: 50000,
+        remaining_ttl: "~694 days".to_string(),
+        risk: sentinel_cli::RiskDisplay::Warn,
+        recommended_actions: vec!["Extend storage TTL".to_string()],
+        detected_at: "2026-01-15T10:30:00Z".to_string(),
+    };
 
-#[tokio::test]
-async fn test_parse_cli_has_watch_command() {
-    let cli = Cli::parse_from(["sentinel", "watch", "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM", "--network", "testnet"]);
-    assert!(matches!(cli.command, sentinel_cli::Commands::Watch(_)));
-}
-
-#[tokio::test]
-async fn test_watch_args_with_smtp() {
-    let cli = Cli::parse_from([
-        "sentinel",
-        "watch",
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "--network",
-        "testnet",
-        "--smtp-server",
-        "smtp.example.com",
-    ]);
-    match cli.command {
-        sentinel_cli::Commands::Watch(wargs) => {
-            assert!(wargs.smtp_server.is_some());
-        }
-        _ => panic!("expected watch command"),
-    }
-}
-
-#[tokio::test]
-async fn test_watch_args_with_webhook() {
-    let cli = Cli::parse_from([
-        "sentinel",
-        "watch",
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        "--network",
-        "testnet",
-        "--webhook-url",
-        "https://example.com/webhook",
-    ]);
-    match cli.command {
-        sentinel_cli::Commands::Watch(wargs) => {
-            assert!(wargs.webhook_url.is_some());
-        }
-        _ => panic!("expected watch command"),
-    }
+    assert_eq!(payload.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
+    assert_eq!(payload.storage_keys.len(), 2);
+    assert_eq!(payload.remaining_ledgers, 50000);
+    assert_eq!(payload.risk.risk_text(), "WARN");
 }

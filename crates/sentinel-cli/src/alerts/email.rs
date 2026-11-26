@@ -4,8 +4,9 @@
 //! Generates responsive HTML email notifications with risk-level color coding.
 //! Implements 24-hour deduplication to suppress duplicate notifications.
 
-use lettre::{Email, Message, SmtpTransport};
-use rustls::ClientConfig;
+use lettre::Message;
+use lettre::transport::smtp::SmtpTransport;
+use lettre::Transport;
 use std::time::SystemTime;
 use tracing::{info, warn, error, debug};
 
@@ -64,7 +65,7 @@ impl RiskDisplay {
     }
 
     /// Returns the risk level text string.
-    fn risk_text(&self) -> &'static str {
+    pub fn risk_text(&self) -> &'static str {
         match self {
             RiskDisplay::Ok => "OK",
             RiskDisplay::Warn => "WARN",
@@ -99,20 +100,17 @@ pub struct EmailPayload {
 ///
 /// Returns an error if the email cannot be sent.
 pub async fn send_email(
-    config: &EmailConfig,
+    _config: &EmailConfig,
     payload: &EmailPayload,
     recipients: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Build the email message parts
-    let (subject, text_body, html_body) = build_email_parts(payload, recipients);
+    let (subject, text_body, _html_body) = build_email_parts(payload, recipients);
 
     // Create the SMTP transport
     // Note: For full STARTTLS support, use SmtpTransport::starttls_relay().
     // For now, use unencrypted_localhost for both cases.
     let transport = SmtpTransport::unencrypted_localhost();
-
-    // Create the email client and send
-    let client = Email::new(transport);
 
     // Build the message
     let message = Message::builder()
@@ -121,17 +119,16 @@ pub async fn send_email(
         .subject(&subject)
         .body(text_body.clone())?;
 
-    let send_result = client.send(&message).await;
-    let send_error = send_result.as_ref().err();
-    if let Some(e) = send_error {
+    // Send the message
+    let send_result = transport.send(&message);
+    if let Err(e) = send_result {
         // Redact sensitive information from error messages
         error!("Failed to send email notification: {e:?}");
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "email send failed",
+        )));
     }
-    send_result.unwrap_or_else(|e| {
-        // Convert lettre error to io error for the return type
-        let _ = (e, std::io::Error::new(std::io::ErrorKind::Other, "email send failed"));
-        std::io::Error::new(std::io::ErrorKind::Other, "email send failed")
-    })?;
 
     Ok(())
 }
@@ -160,12 +157,12 @@ fn build_email_parts(payload: &EmailPayload, _recipients: &[String]) -> (String,
 <head>
     <style>
         body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        .risk-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; margin-top: 10px; }
-        .section { margin: 20px 0; }
-        .action { background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 10px; }
-        .footer { font-size: 12px; color: #666; margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; }
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+        .risk-badge {{ display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; margin-top: 10px; }}
+        .section {{ margin: 20px 0; }}
+        .action {{ background: #f8f9fa; padding: 10px; border-radius: 4px; margin-top: 10px; }}
+        .footer {{ font-size: 12px; color: #666; margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px; }}
     </style>
 </head>
 <body>
@@ -196,6 +193,7 @@ fn build_email_parts(payload: &EmailPayload, _recipients: &[String]) -> (String,
 
         <div class="footer">
             <p>This is an automated notification from Soroban Sentinel.</p>
+            <p>Detected at: {detected_at}</p>
             <p>Do not reply to this email.</p>
         </div>
     </div>
@@ -367,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_deduplication_within_cooldown() {
-        let tracker = DeduplicationTracker::new();
+        let mut tracker = DeduplicationTracker::new();
         let risk = RiskLevel::Warn;
 
         // First call
@@ -377,7 +375,7 @@ mod tests {
         tracker.record_send("test@example.com", risk);
         // In a real scenario, we'd check after time has passed.
         // For this test, we just verify the API works.
-        assert!(tracker.should_send("test@example.com", risk)); // Would be false after 24h
+        assert!(!tracker.should_send("test@example.com", risk)); // Should be false within 24h cooldown
     }
 
     #[test]
