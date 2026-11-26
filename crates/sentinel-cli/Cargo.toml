@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-readme = "../../README.md"
+repository.workspace = true
+readme.workspace = true
 description = "Command-line interface for Soroban Sentinel"
 
 [lib]
@@ -27,7 +28,7 @@ parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
 serde_yaml = "0.9"
 sentinel-core.workspace = true
 clap.workspace = true
-clap_complete = "4.5"
+clap_complete.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,8 +39,7 @@ arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-schemars = "0.8"
-hdrhistogram = "7.5"
+schemars.workspace = true
 reqwest.workspace = true
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }

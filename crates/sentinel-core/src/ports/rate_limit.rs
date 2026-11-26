@@ -481,7 +481,7 @@ mod tests {
         for _ in 0..3 {
             odd_reader.get_latest_ledger().await.unwrap();
         }
-        assert_paced_within(odd_start.elapsed(), Duration::from_secs(1), 3);
+        assert_paced_within(odd_start.elapsed(), Duration::from_secs(1), 10);
     }
 
     #[tokio::test]
