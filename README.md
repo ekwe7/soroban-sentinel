@@ -1,5 +1,7 @@
 # Soroban Sentinel (`soroban-sentinel`)
 
+<p>feat: add nextjs example</p>
+
 > **Autonomous storage TTL monitoring, expiry-risk detection, and automated maintenance toolkit for Soroban smart contracts on the Stellar network.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
