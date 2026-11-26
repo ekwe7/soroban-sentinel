@@ -12,7 +12,9 @@ use crate::{
     },
     alerts::{
         datadog::{DatadogAdapter, DatadogSite},
+        google_chat::GoogleChatAlertDispatcher,
         incident::{dedup_key, IncidentDispatcher, Provider},
+        matrix::MatrixAlertDispatcher,
     },
     args::WatchArgs,
     commands::{scan::prepare_scan, EXIT_INVALID_ARGS},
@@ -197,6 +199,30 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
         }
     };
 
+    let matrix_options = (
+        args.alert_matrix_homeserver,
+        args.alert_matrix_room,
+        args.alert_matrix_token,
+    );
+    let mut matrix = match matrix_options {
+        (None, None, None) => None,
+        (Some(homeserver), Some(room), Some(token)) => {
+            match MatrixAlertDispatcher::new(&homeserver, room, token) {
+                Ok(dispatcher) => Some(dispatcher),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return EXIT_INVALID_ARGS;
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "Error: --alert-matrix-homeserver, --alert-matrix-room, and --alert-matrix-token must be provided together"
+            );
+            return EXIT_INVALID_ARGS;
+        }
+    };
+
     // Build the optional Datadog adapter when credentials are provided.
     let mut datadog: Option<DatadogAdapter> = if let Some(api_key) = args.datadog_api_key {
         let site = match DatadogSite::parse(&args.datadog_site) {
@@ -227,6 +253,18 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
         };
     let mut telegram_reported: HashMap<String, RiskLevel> = HashMap::new();
 
+    let mut google_chat = if let Some(webhook_url) = args.alert_google_chat {
+        match GoogleChatAlertDispatcher::new(&webhook_url) {
+            Ok(dispatcher) => Some(dispatcher),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return EXIT_INVALID_ARGS;
+            }
+        }
+    } else {
+        None
+    };
+
     loop {
         match usecase.execute_with_keys(request.clone()).await {
             Ok((report, keys)) => {
@@ -238,6 +276,11 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
                 match output {
                     Ok(output) => println!("{output}"),
                     Err(error) => eprintln!("Watch report failed: {error}"),
+                }
+                if let Some(dispatcher) = matrix.as_mut() {
+                    if let Err(error) = dispatcher.observe(&report).await {
+                        eprintln!("Matrix notification failed: {error}");
+                    }
                 }
                 for dispatcher in &mut dispatchers {
                     if let Err(error) = dispatcher.observe(&report, &keys).await {
@@ -260,6 +303,11 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
                             .await
                     {
                         eprintln!("Watch Telegram notification failed: {error}");
+                    }
+                }
+                if let Some(dispatcher) = google_chat.as_mut() {
+                    if let Err(error) = dispatcher.observe(&report).await {
+                        eprintln!("Google Chat notification failed: {error}");
                     }
                 }
                 if let Some(teams) = teams.as_mut() {

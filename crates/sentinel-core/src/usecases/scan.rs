@@ -1,6 +1,7 @@
 //! Use case orchestrator for scanning Soroban smart contract storage TTL and expiration risk.
 
 use std::collections::{HashMap, HashSet};
+use tokio::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use stellar_xdr::curr::{ReadXdr, WriteXdr};
@@ -20,9 +21,10 @@ use crate::domain::cold_storage::{
 use crate::domain::{
     calculate_remaining_ledgers, detect_contract_upgrade, estimate_remaining_days,
     estimate_remaining_seconds_with_velocity, evaluate_risk, evaluate_risk_for_durability,
-    format_contract_code_hash, ContractUpgradeBaseline, ContractUpgradeEvent, Durability,
-    EntryType, InstanceStorageBreakdown, RentDebt, RentDebtCalculator, RiskLevel, SacAssetInfo,
-    StorageEntry, ThresholdConfig, WasmCodeInspection, TARGET_LEDGER_CLOSE_SECONDS,
+    filter_ledger_velocity, format_contract_code_hash, ContractUpgradeBaseline,
+    ContractUpgradeEvent, Durability, EntryType, InstanceStorageBreakdown, LedgerAnomalyFilter,
+    RentDebt, RentDebtCalculator, RiskLevel, SacAssetInfo, StorageEntry, ThresholdConfig,
+    WasmCodeInspection, TARGET_LEDGER_CLOSE_SECONDS,
 };
 use crate::error::SentinelResult;
 use crate::ports::reader::LedgerReader;
@@ -400,6 +402,7 @@ pub struct ScanContractUseCase<R: LedgerReader> {
     reader: R,
     archival: Option<(ArchivalPolicy, HashMap<String, ExtensionHistory>)>,
     upgrade_baseline: Option<(ContractUpgradeBaseline, RentDebtCalculator)>,
+    anomaly_filter: Mutex<LedgerAnomalyFilter>,
 }
 
 impl<R: LedgerReader> ScanContractUseCase<R> {
@@ -409,6 +412,7 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
             reader,
             archival: None,
             upgrade_baseline: None,
+            anomaly_filter: Mutex::new(LedgerAnomalyFilter::default()),
         }
     }
 
@@ -478,7 +482,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
         // Resolve storage burn velocity: explicit CLI override, historical
         // ledger close samples, a legacy single velocity measurement, or the
         // standard 5.0s target when RPC history is pruned or unavailable.
-        let burn_rate = if let Some(override_seconds) = request.ledger_seconds_override {
+        let has_velocity_override = request.ledger_seconds_override.is_some();
+        let mut burn_rate = if let Some(override_seconds) = request.ledger_seconds_override {
             BurnRate::measured(override_seconds)
         } else {
             match self
@@ -493,6 +498,14 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 },
             }
         };
+        if burn_rate.is_measured() && !has_velocity_override {
+            let filtered = filter_ledger_velocity(
+                burn_rate.seconds_per_ledger,
+                &mut *self.anomaly_filter.lock().await,
+            );
+            burn_rate.seconds_per_ledger = filtered;
+            burn_rate.ledgers_per_second = 1.0 / filtered;
+        }
         let ledger_velocity = burn_rate.seconds_per_ledger;
         info!(ledger_velocity = %ledger_velocity, "ledger_velocity_resolved");
 

@@ -11,6 +11,14 @@ pub const TARGET_LEDGER_CLOSE_SECONDS: f64 = 5.0;
 /// Number of seconds in a standard day (24 * 60 * 60).
 pub const SECONDS_PER_DAY: f64 = 86_400.0;
 
+/// Filters a measured ledger-close velocity before using it for TTL estimates.
+pub fn filter_ledger_velocity(
+    ledger_velocity_seconds: f64,
+    anomaly_filter: &mut super::anomaly::LedgerAnomalyFilter,
+) -> f64 {
+    anomaly_filter.observe(ledger_velocity_seconds)
+}
+
 /// Calculates remaining ledgers until entry expiration.
 ///
 /// # Special Cases:

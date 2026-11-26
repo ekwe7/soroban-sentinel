@@ -522,6 +522,11 @@ while critical or archived risk produces a critical alert. A watched entry
 returning to OK resolves its alert. The watcher tracks successfully delivered
 alerts during its current process lifetime.
 
+Google Chat cards can be enabled with `--alert-google-chat <WEBHOOK_URL>`.
+Matrix notices use `--alert-matrix-homeserver <URL>`,
+`--alert-matrix-room <ROOM_ID>`, and `--alert-matrix-token <TOKEN>`; the token
+can also be supplied through `SENTINEL_ALERT_MATRIX_TOKEN`.
+
 ### Core submission and key discovery
 
 `TransactionSubmitter::submit` takes signed envelope XDR in base64, the network
