@@ -17,7 +17,10 @@ async fn test_email_payload_creation() {
         detected_at: "2026-01-15T10:30:00Z".to_string(),
     };
 
-    assert_eq!(payload.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
+    assert_eq!(
+        payload.contract_id,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+    );
     assert_eq!(payload.storage_keys.len(), 2);
     assert_eq!(payload.remaining_ledgers, 50000);
     assert_eq!(payload.risk.risk_text(), "WARN");

@@ -422,45 +422,14 @@ impl SorobanRpcClient {
 
     async fn send_rpc_payload<P: Serialize + Sync + ?Sized>(
         &self,
-        method: &'static str,
-        params: P,
-    ) -> SentinelResult<R>
-    where
-        P: Serialize + Send,
-        R: for<'de> Deserialize<'de>,
-    {
-        let request_payload = JsonRpcRequest {
-            jsonrpc: "2.0",
-            id: 1,
-            method,
-            params,
-        };
+        payload: &P,
+        retryable: bool,
+    ) -> SentinelResult<Vec<u8>> {
         let redacted_url = redact_rpc_url(&self.rpc_url);
-        let key_count = serde_json::to_value(&request_payload)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("params")?
-                    .get("keys")?
-                    .as_array()
-                    .map(|keys| keys.len())
-            });
-
-        // Writes can be accepted before a transport failure is visible.
-        // Only the submission adapter retries an explicit TRY_AGAIN_LATER.
-        let retryable = method != "sendTransaction";
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
             let started_at = Instant::now();
-
-            let response_result = self
-        payload: &P,
-        retryable: bool,
-    ) -> SentinelResult<Vec<u8>> {
-        let mut attempt: u32 = 0;
-        loop {
-            attempt += 1;
             match self
                 .http_client
                 .post(&self.rpc_url)
@@ -472,10 +441,8 @@ impl SorobanRpcClient {
                 Ok(response) => {
                     let status = response.status();
                     info!(
-                        method = method,
                         rpc_url = %redacted_url,
                         attempt = attempt,
-                        key_count = key_count,
                         http_status = status.as_u16(),
                         latency_ms = started_at.elapsed().as_millis() as u64,
                         "rpc_request"
@@ -490,16 +457,12 @@ impl SorobanRpcClient {
                         let retry_after = parse_retry_after(response.headers());
                         let backoff = self.retry_policy.next_delay(attempt, retry_after);
                         debug!(
-                            method = method,
                             rpc_url = %redacted_url,
                             attempt = attempt,
                             http_status = status.as_u16(),
                             backoff_ms = backoff.as_millis() as u64,
                             "rpc_retry_scheduled"
                         );
-                        let backoff = self
-                            .retry_policy
-                            .next_delay(attempt, parse_retry_after(response.headers()));
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
@@ -534,50 +497,41 @@ impl SorobanRpcClient {
                     }
                     return Ok(body_bytes);
                 }
-                Err(e) => {
+                Err(error) => {
                     info!(
-                        method = method,
                         rpc_url = %redacted_url,
                         attempt = attempt,
                         latency_ms = started_at.elapsed().as_millis() as u64,
-                        error = %e,
+                        error = %error,
                         "rpc_request_failed"
                     );
 
                     // Retry on connect errors or timeouts if attempts remain
-                Err(error) => {
                     if retryable
                         && (error.is_connect() || error.is_timeout())
                         && attempt < self.retry_policy.max_retries
                     {
                         let backoff = self.retry_policy.next_delay(attempt, None);
                         debug!(
-                            method = method,
                             rpc_url = %redacted_url,
                             attempt = attempt,
                             backoff_ms = backoff.as_millis() as u64,
                             "rpc_retry_scheduled"
                         );
                         tokio::time::sleep(backoff).await;
-                        tokio::time::sleep(self.retry_policy.next_delay(attempt, None)).await;
                         continue;
                     }
                     if error.is_timeout() {
                         return Err(SentinelError::RpcConnectionTimeout(format!(
                             "Timeout connecting to RPC at {}: {}",
-                            redacted_url, e
+                            redacted_url, error
                         )));
                     } else {
                         return Err(SentinelError::RpcConnectionTimeout(format!(
                             "Failed to connect to RPC at {}: {}",
-                            redacted_url, e
-                            self.rpc_url, error
+                            redacted_url, error
                         )));
                     }
-                    return Err(SentinelError::RpcConnectionTimeout(format!(
-                        "Failed to connect to RPC at {}: {}",
-                        self.rpc_url, error
-                    )));
                 }
             }
         }

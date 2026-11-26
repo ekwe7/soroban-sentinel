@@ -175,7 +175,7 @@ fn validate_generated(service_type: &str, rendered: &str) -> Result<(), String> 
 fn write_service(
     dir: &Path,
     filename: &str,
-    _service_type: &str,
+    service_type: &str,
     rendered: &str,
 ) -> Result<(), String> {
     fs::create_dir_all(dir)

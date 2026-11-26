@@ -446,8 +446,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 },
             }
         };
-        info!(ledger_velocity = %ledger_velocity, "ledger_velocity_resolved");
         let ledger_velocity = burn_rate.seconds_per_ledger;
+        info!(ledger_velocity = %ledger_velocity, "ledger_velocity_resolved");
 
         // 2. Derive persistent keys from symbols, base64 ScVal, and typed key expressions
         let mut persistent_descriptors: Vec<(String, String)> = Vec::new();

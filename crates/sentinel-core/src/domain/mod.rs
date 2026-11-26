@@ -17,6 +17,7 @@ pub mod fee_optimizer;
 pub mod footprint;
 pub mod footprint_fees;
 pub mod histogram;
+pub mod hysteresis;
 pub mod init_footprint;
 pub mod key_pattern;
 pub mod multisig;
@@ -73,6 +74,7 @@ pub use footprint_fees::{
     FootprintFeeCalculator, FootprintFeeError, FootprintPartitionCost, BYTES_PER_KIB,
     STROOPS_PER_XLM, TESTNET_FEE_READ_1KB_STROOPS, TESTNET_FEE_WRITE_1KB_STROOPS,
 };
+pub use hysteresis::{AlertAction, HysteresisConfig, HysteresisFilter};
 pub use key_pattern::{
     parse_key_pattern, KeyPattern, KeyPatternCandidateInput, KeyPatternToken,
     MAX_KEY_PATTERN_CANDIDATES, MAX_KEY_PATTERN_LEN,
