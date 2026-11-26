@@ -10,6 +10,7 @@ pub mod simulation;
 pub mod snapshot;
 pub mod soroban_rpc;
 pub mod stellar_account;
+pub mod wasm;
 pub mod wasm_sections;
 pub mod webhook;
 pub mod xdr_keys;
@@ -33,16 +34,18 @@ pub use soroban_rpc::{
     MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
 };
 pub use stellar_account::fetch_account_signer_config;
+pub use wasm::{inspect_contract_code_entry, inspect_wasm};
 pub use wasm_sections::{analyze_wasm, MAX_WASM_ANALYSIS_BYTES};
 pub use webhook::WebhookAlertNotifier;
 pub use xdr_keys::{
-    derive_contract_code_key, derive_contract_data_entry_size_config_key,
+    derive_contract_code_key, derive_contract_data_entry_size_config_key, derive_contract_data_key,
     derive_contract_instance_key, derive_persistent_key_from_scval, derive_persistent_symbol_key,
     derive_persistent_xdr_key, derive_sac_allowance_key, derive_sac_balance_key,
     derive_state_archival_config_key, derive_temporary_key_from_scval, derive_temporary_symbol_key,
-    extract_contract_code_size, extract_instance_storage_breakdown, extract_sac_asset_info,
-    extract_wasm_hash_from_instance_entry, parse_contract_id, safe_xdr_limits,
-    summarize_scval, KeyPatternMatcher, XDR_MAX_BYTE_LENGTH, XDR_MAX_RECURSION_DEPTH,
+    derive_temporary_xdr_key, extract_contract_code_size, extract_instance_storage_breakdown,
+    extract_sac_asset_info, extract_wasm_hash_from_instance_entry, parse_contract_id,
+    safe_xdr_limits, summarize_scval, KeyPatternMatcher, XDR_MAX_BYTE_LENGTH,
+    XDR_MAX_RECURSION_DEPTH,
 };
 
 #[cfg(feature = "fuzzing")]

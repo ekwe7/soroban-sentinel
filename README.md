@@ -167,6 +167,45 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
   --key COUNTER
 ```
 
+For WASM contracts, scans also report the raw bytecode size, section sizes,
+Soroban interface version, SDK version/build metadata when embedded, byte-ledger
+exposure, and the code TTL relative to the instance TTL. A CRITICAL or ARCHIVED
+code entry indicates that contract execution is at risk or already frozen.
+
+### Estimating Storage Rent (`sentinel budget`)
+Estimate reserve requirements in stroops and XLM for a target horizon. The rent
+rate is supplied explicitly as stroops per byte per ledger because it is a
+network parameter and is not inferred from arbitrary storage keys:
+
+```bash
+sentinel budget CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --horizon-days 90 \
+  --fee-rate-stroops-per-byte-ledger 2 \
+  --key ADMIN \
+  --temporary-key CACHE \
+  --format json
+```
+
+By default, the report includes contract instance and code entries. Persistent
+and temporary data keys are opt-in (`--key`, `--key-xdr`, `--key-expr` and
+their `--temporary-key*` equivalents). Soroban RPC cannot enumerate arbitrary
+contract storage, so provide the keys to include. `--horizon-days` defaults to
+30 and accepts values from 1 through 3650.
+
+### Exporting Grafana Monitoring Templates
+Generate a Grafana 10-compatible dashboard and Prometheus alert rules:
+
+```bash
+sentinel export-grafana --output-dir monitoring
+```
+
+This writes `sentinel_dashboard.json` and `sentinel_alerts.yml`. The dashboard
+uses the `sentinel_entry_ttl_remaining_ledgers`,
+`sentinel_critical_entries`, and `sentinel_rpc_request_duration_seconds`
+Prometheus series; the alert rule triggers on
+`sentinel_contract_risk_level{risk_level="CRITICAL"}`. Configure your metrics
+scrape source to expose these series.
+
 ### Composite Storage Key Expressions (`--key-expr`)
 Soroban contracts commonly key map storage with composite enum types like `DataKey::Balance(Address)`. These encode as nested vectors (`ScVal::Vec([Symbol("Balance"), Address(..)])`). Instead of hand-crafting base64 XDR for `--key-xdr`, you can query them using `--key-expr`:
 

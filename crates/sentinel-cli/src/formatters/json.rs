@@ -66,6 +66,9 @@ pub struct JsonEntryReport {
     pub estimated_remaining_days: f64,
     /// Lowercase risk status (e.g., "ok", "warn", "critical", "archived").
     pub status: String,
+    /// WASM metadata for ContractCode entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_inspection: Option<sentinel_core::WasmCodeInspection>,
 }
 
 impl From<&TTLReport> for JsonTTLReport {
@@ -87,6 +90,7 @@ impl From<&TTLReport> for JsonTTLReport {
                     sentinel_core::domain::EntryType::ContractInstance => "contract_instance",
                     sentinel_core::domain::EntryType::ContractCode => "contract_code",
                     sentinel_core::domain::EntryType::PersistentData => "contract_data",
+                    sentinel_core::domain::EntryType::TemporaryData => "temporary_data",
                 };
 
                 JsonEntryReport {
@@ -99,6 +103,7 @@ impl From<&TTLReport> for JsonTTLReport {
                     estimated_remaining_seconds: entry.estimated_remaining_seconds,
                     estimated_remaining_days: (entry.remaining_days * 100.0).round() / 100.0,
                     status: entry.status.to_string().to_lowercase(),
+                    wasm_inspection: entry.wasm_inspection.clone(),
                 }
             })
             .collect();

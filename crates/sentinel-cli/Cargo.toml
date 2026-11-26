@@ -69,3 +69,4 @@ predicates.workspace = true
 wiremock.workspace = true
 stellar-xdr.workspace = true
 stellar-strkey.workspace = true
+testcontainers = "0.15"

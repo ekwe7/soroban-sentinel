@@ -2,7 +2,7 @@
 
 use comfy_table::Table;
 use sentinel_core::adapters::SorobanRpcClient;
-use sentinel_core::domain::budget::{
+use sentinel_core::domain::cost_matrix::{
     break_even_transaction_fee, duration_ledgers, extension_budget, BudgetEntry, BudgetRates,
 };
 use sentinel_core::domain::TARGET_LEDGER_CLOSE_SECONDS;
