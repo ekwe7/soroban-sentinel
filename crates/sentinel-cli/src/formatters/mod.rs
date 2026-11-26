@@ -21,8 +21,6 @@ pub use json::{
 };
 pub use junit::{render_junit, JUnitReport, JUnitSummary, JUnitTestCase};
 pub use markdown::{escape_markdown, render_markdown};
-pub use json::{render_json, render_json_with_diff, JsonEntryReport, JsonSummary, JsonTTLReport};
-pub use markdown::render_markdown;
 pub use ndjson::{build_ndjson_entries, render_ndjson, NdjsonEntry};
 #[cfg(feature = "parquet")]
 pub use parquet::render_parquet;

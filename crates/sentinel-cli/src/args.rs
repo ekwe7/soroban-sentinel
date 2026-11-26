@@ -616,10 +616,6 @@ pub struct ScanArgs {
     pub network: String,
 
     /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), "html" (self-contained HTML5 report), "prometheus", "pushgateway", or "sonarqube" (SonarQube Generic Issues)
-    /// Output format for scan results: text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, or html (self-contained HTML5 report)
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), or "html" (self-contained HTML5 report)
-    /// Output format for scan results: text, json, csv, parquet, sarif, markdown, or pushgateway
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), or "markdown"
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
@@ -772,6 +768,8 @@ pub struct BenchmarkArgs {
     /// Output format for benchmark results: "text" (human-readable table) or "json" (machine-readable)
     #[arg(long = "format", default_value = "text", value_name = "FORMAT")]
     pub format: String,
+}
+
 /// Command-line arguments for `sentinel prune-plan`.
 ///
 /// `--key` variants add active persistent keys used as reference sources, while
@@ -1615,19 +1613,6 @@ mod tests {
                 assert!(limits.rpc_url.is_none());
             }
             _ => panic!("expected audit-limits command"),
-    fn test_parse_prune_plan_defaults_and_flags() {
-        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-        let defaults = Cli::parse_from(["sentinel", "prune-plan", contract]);
-        match defaults.command {
-            Commands::PrunePlan(args) => {
-                assert_eq!(args.contract_id, contract);
-                assert!(args.expire_key.is_empty());
-                assert!(args.temp_key.is_empty());
-                assert_eq!(args.network, "testnet");
-                assert_eq!(args.format, "text");
-                assert_eq!(args.warning_threshold, 120960);
-            }
-            _ => panic!("expected prune-plan command"),
         }
 
         let custom = Cli::parse_from([
@@ -1696,6 +1681,27 @@ mod tests {
                 assert!(gen.force);
             }
             _ => panic!("expected generate-github-workflow command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_prune_plan_defaults_and_flags() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+        let defaults = Cli::parse_from(["sentinel", "prune-plan", contract]);
+        match defaults.command {
+            Commands::PrunePlan(args) => {
+                assert_eq!(args.contract_id, contract);
+                assert!(args.expire_key.is_empty());
+                assert!(args.temp_key.is_empty());
+                assert_eq!(args.network, "testnet");
+                assert_eq!(args.format, "text");
+                assert_eq!(args.warning_threshold, 120960);
+            }
+            _ => panic!("expected prune-plan command"),
+        }
+
+        let custom = Cli::parse_from([
+            "sentinel",
             "prune-plan",
             contract,
             "--expire-key",

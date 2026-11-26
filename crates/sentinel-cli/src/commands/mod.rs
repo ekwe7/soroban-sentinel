@@ -24,8 +24,8 @@ pub mod init;
 pub mod key_diff;
 pub mod keys;
 pub mod network;
-pub mod redact;
 pub mod prune_plan;
+pub mod redact;
 pub mod restore;
 pub mod scan;
 pub mod schema;
@@ -57,8 +57,8 @@ pub use init::run_init;
 pub use key_diff::run_key_diff;
 pub use keys::{run_key_decode, run_key_encode};
 pub use network::run_network;
-pub use redact::run_redact;
 pub use prune_plan::run_prune_plan;
+pub use redact::run_redact;
 pub use restore::run_restore;
 pub use scan::{
     resolve_rpc_url, resolve_threshold_config, run_scan, EXIT_CRITICAL_OR_ARCHIVED,
