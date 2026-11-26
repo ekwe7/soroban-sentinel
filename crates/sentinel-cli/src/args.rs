@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use sentinel_core::domain::DEFAULT_SAMPLE_WINDOW_LEDGERS;
 
 /// Autonomous storage TTL monitoring and expiry-risk detection for Soroban smart contracts.
@@ -563,7 +563,23 @@ pub struct DiffNetworksArgs {
     pub format: String,
 }
 
-/// Command-line arguments for the `sentinel scan` command.
+/// Output format for `sentinel scan` results.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Colorized ASCII table
+    Text,
+    /// Machine-readable JSON
+    Json,
+    /// SARIF v2.1.0 for GitHub Code Scanning
+    Sarif,
+    /// GitHub-flavoured Markdown for PR and issue comments
+    Markdown,
+    /// Prometheus text exposition format for the node_exporter textfile collector
+    Prometheus,
+}
+
+/// Contract, network, key and threshold flags shared by `sentinel scan` and `sentinel watch`.
+/// Contract, network, key and threshold flags for `sentinel scan`.
 #[derive(Args, Debug, Clone)]
 pub struct ScanArgs {
     /// Target Soroban smart contract address (C... Strkey format) or a contract alias
@@ -578,7 +594,7 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
-    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), "html" (self-contained HTML5 report), "pushgateway", or "sonarqube" (SonarQube Generic Issues)
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), "html" (self-contained HTML5 report), "prometheus", "pushgateway", or "sonarqube" (SonarQube Generic Issues)
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
@@ -602,13 +618,37 @@ pub struct ScanArgs {
     #[arg(long = "key-expr", value_name = "EXPR")]
     pub key_expr: Vec<String>,
 
-    /// Warning threshold in ledgers
+    /// Temporary storage key symbol to inspect (can be specified multiple times). Expired temporary entries are deleted permanently.
+    #[arg(long = "temp-key", value_name = "SYMBOL")]
+    pub temp_key: Vec<String>,
+
+    /// Temporary storage key encoded as raw base64 ScVal XDR (can be specified multiple times)
+    #[arg(long = "temp-key-xdr", value_name = "BASE64_XDR")]
+    pub temp_key_xdr: Vec<String>,
+
+    /// Warning threshold in ledgers below which entries trigger WARN status (defaults to 120,960 ledgers ≈ 7 days)
     #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
     pub threshold: u32,
 
     /// Critical threshold in ledgers
     #[arg(long, value_name = "LEDGERS")]
     pub critical_threshold: Option<u32>,
+
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises WARN
+    #[arg(
+        long = "instance-size-warn-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_WARN_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_warn_pct: u8,
+
+    /// Instance-storage utilisation (% of the network max contract-data entry size) that raises CRITICAL
+    #[arg(
+        long = "instance-size-critical-pct",
+        default_value_t = sentinel_core::domain::DEFAULT_INSTANCE_SIZE_CRITICAL_PCT,
+        value_name = "PCT"
+    )]
+    pub instance_size_critical_pct: u8,
 
     /// Return a nonzero exit code for entries at or above this risk level
     #[arg(long = "fail-on-risk", value_parser = ["critical"])]
@@ -626,7 +666,6 @@ pub struct ScanArgs {
     #[arg(long = "ledger-seconds", value_name = "SECS")]
     pub ledger_seconds: Option<f64>,
 
-    /// Path to a previous JSON scan report baseline file
     /// Number of recent ledgers sampled to measure storage burn velocity (2–10000)
     #[arg(
         long = "sample-window",
@@ -1203,6 +1242,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_watch_args() {
+        let args = Cli::parse_from([
+            "sentinel",
+            "watch",
+            "CABC",
+            "--key",
+            "COUNTER",
+            "--temp-key",
+            "NONCE",
+            "--interval",
+            "30",
+            "--max-iterations",
+            "3",
+            "--max-consecutive-failures",
+            "2",
+            "--format",
+            "json",
+        ]);
+        let Commands::Watch(watch) = args.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.target.contract_id, "CABC");
+        assert_eq!(watch.target.key, vec!["COUNTER"]);
+        assert_eq!(watch.target.temp_key, vec!["NONCE"]);
+        assert_eq!(watch.interval, 30);
+        assert_eq!(watch.max_iterations, Some(3));
+        assert_eq!(watch.max_consecutive_failures, 2);
+        assert_eq!(watch.format, WatchFormat::Json);
+
+        let defaults = Cli::parse_from(["sentinel", "watch", "CABC"]);
+        let Commands::Watch(watch) = defaults.command else {
+            panic!("expected watch command");
+        };
+        assert_eq!(watch.interval, 60);
+        assert_eq!(watch.max_iterations, None);
+        assert_eq!(watch.max_consecutive_failures, 5);
+        assert_eq!(watch.format, WatchFormat::Text);
+        assert!(
+            Cli::try_parse_from(["sentinel", "watch", "CABC", "--format", "markdown"]).is_err()
+        );
+    }
+
+    #[test]
+    fn test_parse_scan_format_values() {
+        for (raw, expected) in [
+            ("text", OutputFormat::Text),
+            ("json", OutputFormat::Json),
+            ("sarif", OutputFormat::Sarif),
+            ("markdown", OutputFormat::Markdown),
+            ("prometheus", OutputFormat::Prometheus),
+            ("JSON", OutputFormat::Json),
+        ] {
+            let args = Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", raw]).unwrap();
+            let Commands::Scan(scan) = args.command else {
+                panic!("expected scan command");
+            };
+            assert_eq!(scan.format, expected, "{raw}");
+        }
+        assert!(Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", "xml"]).is_err());
+    }
+
+    #[test]
     fn test_parse_scan_defaults() {
         let args = Cli::parse_from([
             "sentinel",
@@ -1226,6 +1327,10 @@ mod tests {
                 assert!(scan.key.is_empty());
                 assert!(scan.key_xdr.is_empty());
                 assert!(scan.key_expr.is_empty());
+                assert!(scan.temp_key.is_empty());
+                assert!(scan.temp_key_xdr.is_empty());
+                assert_eq!(scan.instance_size_warn_pct, 75);
+                assert_eq!(scan.instance_size_critical_pct, 90);
                 assert!(scan.rpc_timeout.is_none());
                 assert!(scan.rpc_max_retries.is_none());
                 assert!(scan.ledger_seconds.is_none());
@@ -1267,6 +1372,12 @@ mod tests {
             "sym:Balance",
             "--key-expr",
             "vec[sym:Data, u32:1]",
+            "--temp-key",
+            "NONCE",
+            "--temp-key",
+            "SESSION",
+            "--temp-key-xdr",
+            "AAAAAw==",
             "--rpc-timeout",
             "30",
             "--rpc-max-retries",
@@ -1288,6 +1399,14 @@ mod tests {
         assert_eq!(args.otlp_endpoint.as_deref(), Some("http://localhost:4317"));
         match args.command {
             Commands::Scan(scan) => {
+                assert_eq!(
+                    scan.contract_id,
+                    "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                );
+                assert_eq!(
+                    scan.rpc_url.as_deref(),
+                    Some("https://soroban-testnet.stellar.org")
+                );
                 assert_eq!(scan.network, "mainnet");
                 assert_eq!(scan.format, "ndjson");
                 assert!(scan.no_color);
@@ -1296,6 +1415,8 @@ mod tests {
                 assert_eq!(scan.key, vec!["COUNTER", "ADMIN"]);
                 assert_eq!(scan.key_xdr, vec!["AAAAFA=="]);
                 assert_eq!(scan.key_expr, vec!["sym:Balance", "vec[sym:Data, u32:1]"]);
+                assert_eq!(scan.temp_key, vec!["NONCE", "SESSION"]);
+                assert_eq!(scan.temp_key_xdr, vec!["AAAAAw=="]);
                 assert_eq!(scan.rpc_timeout, Some(30));
                 assert_eq!(scan.rpc_max_retries, Some(5));
                 assert_eq!(scan.ledger_seconds, Some(5.5));

@@ -174,7 +174,7 @@ impl StorageEntry {
         &self.key_identifier
     }
 
-    /// Returns the entry type (e.g. ContractInstance, ContractCode, PersistentData).
+    /// Returns the entry type (e.g. ContractInstance, ContractCode, PersistentData, TemporaryData).
     pub fn entry_type(&self) -> EntryType {
         self.entry_type
     }
@@ -236,6 +236,7 @@ mod tests {
         assert_eq!(EntryType::ContractInstance.to_string(), "ContractInstance");
         assert_eq!(EntryType::ContractCode.to_string(), "ContractCode");
         assert_eq!(EntryType::PersistentData.to_string(), "PersistentData");
+        assert_eq!(EntryType::TemporaryData.to_string(), "TemporaryData");
     }
 
     #[test]

@@ -218,6 +218,65 @@ impl Default for ThresholdConfig {
     }
 }
 
+/// Default instance-storage utilisation (percent of the network entry-size limit) that raises WARN.
+pub const DEFAULT_INSTANCE_SIZE_WARN_PCT: u8 = 75;
+
+/// Default instance-storage utilisation (percent of the network entry-size limit) that raises CRITICAL.
+pub const DEFAULT_INSTANCE_SIZE_CRITICAL_PCT: u8 = 90;
+
+/// Utilisation thresholds for a contract instance entry against the network's
+/// `max_contract_data_entry_bytes`, as whole percentages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceSizeThresholds {
+    /// Utilisation at or above which the instance entry is `Warn`.
+    pub warn_pct: u8,
+    /// Utilisation at or above which the instance entry is `Critical`.
+    pub critical_pct: u8,
+}
+
+impl InstanceSizeThresholds {
+    /// Constructs and validates thresholds.
+    pub fn try_new(warn_pct: u8, critical_pct: u8) -> SentinelResult<Self> {
+        let thresholds = Self {
+            warn_pct,
+            critical_pct,
+        };
+        thresholds.validate()?;
+        Ok(thresholds)
+    }
+
+    /// Validates `0 < warn_pct < critical_pct <= 100`.
+    pub fn validate(&self) -> SentinelResult<()> {
+        if self.warn_pct == 0 || self.warn_pct >= self.critical_pct || self.critical_pct > 100 {
+            return Err(SentinelError::InvalidThresholdConfig(format!(
+                "Instance size thresholds must satisfy 0 < warn ({}) < critical ({}) <= 100",
+                self.warn_pct, self.critical_pct
+            )));
+        }
+        Ok(())
+    }
+
+    /// Classifies a utilisation percentage on the shared `RiskLevel` scale (never `Archived`).
+    pub fn evaluate(&self, utilization_pct: f64) -> RiskLevel {
+        if utilization_pct >= f64::from(self.critical_pct) {
+            RiskLevel::Critical
+        } else if utilization_pct >= f64::from(self.warn_pct) {
+            RiskLevel::Warn
+        } else {
+            RiskLevel::Ok
+        }
+    }
+}
+
+impl Default for InstanceSizeThresholds {
+    fn default() -> Self {
+        Self {
+            warn_pct: DEFAULT_INSTANCE_SIZE_WARN_PCT,
+            critical_pct: DEFAULT_INSTANCE_SIZE_CRITICAL_PCT,
+        }
+    }
+}
+
 /// Evaluates remaining ledgers against a `ThresholdConfig` to determine risk classification.
 ///
 /// Uses direct 64-bit integer comparison to eliminate lossy truncation or integer overflow.
@@ -493,6 +552,25 @@ mod tests {
     }
 
     #[test]
+    fn test_instance_size_thresholds_validation() {
+        assert!(InstanceSizeThresholds::try_new(75, 90).is_ok());
+        assert!(InstanceSizeThresholds::try_new(1, 100).is_ok());
+        for (warn, critical) in [(0, 90), (90, 90), (95, 90), (75, 101)] {
+            assert!(
+                matches!(
+                    InstanceSizeThresholds::try_new(warn, critical),
+                    Err(SentinelError::InvalidThresholdConfig(_))
+                ),
+                "{warn}/{critical}"
+            );
+        }
+        assert_eq!(
+            InstanceSizeThresholds::default(),
+            InstanceSizeThresholds::try_new(75, 90).unwrap()
+        );
+    }
+
+    #[test]
     fn test_override_validation_bounds() {
         // ThresholdOverride::try_new validation
         assert!(ThresholdOverride::try_new(200, 100).is_ok());
@@ -567,5 +645,16 @@ mod tests {
         assert!(!serialized.contains("persistent"));
         let deserialized: ThresholdConfig = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, with_overrides);
+    }
+
+    #[test]
+    fn test_instance_size_thresholds_evaluate_boundaries() {
+        let thresholds = InstanceSizeThresholds::default();
+        assert_eq!(thresholds.evaluate(0.0), RiskLevel::Ok);
+        assert_eq!(thresholds.evaluate(74.99), RiskLevel::Ok);
+        assert_eq!(thresholds.evaluate(75.0), RiskLevel::Warn);
+        assert_eq!(thresholds.evaluate(89.99), RiskLevel::Warn);
+        assert_eq!(thresholds.evaluate(90.0), RiskLevel::Critical);
+        assert_eq!(thresholds.evaluate(120.0), RiskLevel::Critical);
     }
 }

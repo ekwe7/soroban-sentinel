@@ -19,8 +19,8 @@ pub mod events;
 pub mod fee_bump;
 pub mod fee_optimizer;
 pub mod footprint;
-pub mod half_life;
 pub mod footprint_fees;
+pub mod half_life;
 pub mod histogram;
 pub mod hysteresis;
 pub mod init_footprint;
@@ -90,15 +90,15 @@ pub use fee_bump::{
 };
 pub use fee_optimizer::{optimize_bump_batch, FeeOptimizerEntry, ScheduledExtension, UrgencyTier};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
-pub use half_life::{
-    fixed_point_exp_neg, DepletionStep, RetentionMode, StorageChurnModel, FIXED_POINT_SCALE,
-    LN_2_SCALED,
-};
 pub use footprint_fees::{
     billed_kib_units, classify_ledger_key, scale_bytes_fee, stroops_to_xlm, xdr_encoded_len,
     FootprintEntryCost, FootprintEntryInput, FootprintEntryKind, FootprintFeeBreakdown,
     FootprintFeeCalculator, FootprintFeeError, FootprintPartitionCost, BYTES_PER_KIB,
     TESTNET_FEE_READ_1KB_STROOPS, TESTNET_FEE_WRITE_1KB_STROOPS,
+};
+pub use half_life::{
+    fixed_point_exp_neg, DepletionStep, RetentionMode, StorageChurnModel, FIXED_POINT_SCALE,
+    LN_2_SCALED,
 };
 pub use hysteresis::{AlertAction, HysteresisConfig, HysteresisFilter};
 pub use key_pattern::{
@@ -129,8 +129,9 @@ pub use recommend::{
 pub use restore::{plan_restore_footprint, RestoreError, RestorePlan};
 pub use restore_fee::{RestoreFee, RestoreFeeCalculator, RestoreFeeError};
 pub use risk::{
-    evaluate_risk, evaluate_risk_for_durability, RiskLevel, ThresholdConfig, ThresholdOverride,
-    DEFAULT_CRITICAL_LEDGERS, DEFAULT_WARNING_LEDGERS,
+    evaluate_risk, evaluate_risk_for_durability, InstanceSizeThresholds, RiskLevel,
+    ThresholdConfig, ThresholdOverride, DEFAULT_CRITICAL_LEDGERS,
+    DEFAULT_INSTANCE_SIZE_CRITICAL_PCT, DEFAULT_INSTANCE_SIZE_WARN_PCT, DEFAULT_WARNING_LEDGERS,
 };
 pub use scenario::{
     evaluate_protocol_scenario, NetworkRentParameters, ProtocolScenarioReport, ScenarioEntry,

@@ -7,6 +7,7 @@ pub mod markdown;
 pub mod ndjson;
 #[cfg(feature = "parquet")]
 pub mod parquet;
+pub mod prometheus;
 pub mod pushgateway;
 pub mod sarif;
 pub mod sonarqube;
@@ -14,12 +15,16 @@ pub mod tabular;
 pub mod text;
 
 pub use html::render_html;
-pub use json::{render_json, render_json_with_diff, JsonEntryReport, JsonSummary, JsonTTLReport};
+pub use json::{
+    render_json, render_json_with_diff, JsonEntryReport, JsonInstanceStorage, JsonSummary,
+    JsonTTLReport,
+};
 pub use junit::{render_junit, JUnitReport, JUnitSummary, JUnitTestCase};
-pub use markdown::render_markdown;
+pub use markdown::{escape_markdown, render_markdown};
 pub use ndjson::{build_ndjson_entries, render_ndjson, NdjsonEntry};
 #[cfg(feature = "parquet")]
 pub use parquet::render_parquet;
+pub use prometheus::{escape_label_value, render_prometheus};
 pub use pushgateway::render_pushgateway;
 pub use sarif::render_sarif;
 pub use sonarqube::render_sonarqube;

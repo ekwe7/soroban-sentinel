@@ -322,6 +322,26 @@ is refused with exit code 10; running without the `parquet` feature also exits
 10 with a rebuild hint. `--baseline` is rejected for this flat schema just like
 CSV. Scan exit codes (0, 1, 2, 10, 11) are unchanged.
 
+### Watching a Contract (`sentinel watch`)
+`sentinel watch` scans one contract on an interval. It accepts the same contract, key and threshold flags
+as `scan`. The first scan prints a full report; later scans print only timestamped state transitions (a
+status change, an entry appearing or disappearing, or `live_until` increasing after a TTL bump), or a single
+heartbeat line when nothing changed:
+
+```bash
+sentinel watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --key ADMIN --temp-key NONCE \
+  --interval 300
+
+# One JSON object per line (NDJSON) for log shippers
+sentinel watch CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format json
+```
+
+`--interval` accepts 10 seconds to 24 hours (default 60). A failed scan is logged to stderr and the watch
+continues; after `--max-consecutive-failures` failures in a row (default 5) it exits `11`. Ctrl-C or SIGTERM
+stops the watch cleanly and exits with the last scan's risk code (`0`, `1` or `2`). `--max-iterations <N>`
+stops after N scans.
+
 ### Advanced RPC & Velocity Options
 ```bash
 # Configure RPC timeout (1–120s) and retry attempts (0–10) with exponential backoff & jitter
@@ -480,11 +500,75 @@ sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
       "remaining_ledgers": 3002723,
       "estimated_remaining_seconds": 15013615.0,
       "estimated_remaining_days": 173.77,
-      "status": "ok"
+      "status": "ok",
+      "instance_storage": {
+        "key_count": 4,
+        "entry_size_bytes": 248,
+        "max_entry_size_bytes": 65536,
+        "utilization_pct": 0.38,
+        "size_status": "ok"
+      }
     }
   ]
 }
 ```
+
+### Instance Storage Size
+Every value a contract keeps in instance storage grows one ledger entry. When that entry reaches the
+network's maximum contract-data entry size (`max_contract_data_entry_bytes`), writes start failing, which
+is a different failure from TTL expiry. Each scan reports the instance's storage key count, its serialized
+entry size and its utilisation of the network limit, and raises the instance entry's status (and so the exit
+code) when utilisation crosses a threshold. The text output says when the cause is size rather than TTL.
+
+```bash
+# Defaults: WARN at 75%, CRITICAL at 90% (must satisfy 0 < warn < critical <= 100)
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  --instance-size-warn-pct 70 \
+  --instance-size-critical-pct 85
+```
+
+The limit is read from the network's `ContractDataEntrySizeBytes` config setting in the same
+`getLedgerEntries` request as the scanned keys. If it cannot be fetched, the scan still succeeds, reports the
+size and key count, omits utilisation and prints a note on stderr.
+
+### Markdown and Prometheus Output
+`--format` accepts `text` (default), `json`, `sarif`, `markdown`, and `prometheus`. An unknown value is
+rejected with exit code `10` before any RPC request is made.
+
+**Markdown** (`--format markdown`) prints a header (contract, network, latest ledger), a GitHub-flavoured
+table with the columns `Entry | Durability | Size | Live Until | Remaining | Status`, and a summary line,
+with no ANSI colour codes. Pipes, backticks and other Markdown punctuation in key names are escaped, so the
+output can be posted as a PR or issue comment by a CI bot:
+
+```bash
+sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format markdown > scan.md
+```
+
+**Prometheus** (`--format prometheus`) writes the [text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+for the node_exporter *textfile collector*, so no daemon or HTTP server is needed. Every family has `# HELP`
+and `# TYPE` lines, entries keep a stable order, and no timestamps are written. All gauges carry `contract`
+and `network` labels; per-entry gauges also carry `entry` and `durability`:
+
+| Metric | Meaning |
+| :--- | :--- |
+| `soroban_sentinel_latest_ledger` | Latest ledger sequence observed by the scan |
+| `soroban_sentinel_entry_live_until_ledger` | Ledger until which the entry stays live (`0` if missing or archived) |
+| `soroban_sentinel_entry_remaining_ledgers` | Ledgers remaining before the entry expires |
+| `soroban_sentinel_entry_status` | `0` = OK, `1` = WARN, `2` = CRITICAL, `3` = ARCHIVED |
+| `soroban_sentinel_entry_size_bytes` | Serialized entry size in bytes |
+
+The exit code still reflects risk (`0`, `1` or `2`) in both formats, so a cron job must not treat a non-zero
+exit as "no output". Write to a temporary file and `mv` it into the collector directory, so node_exporter
+never reads a half-written file:
+
+```bash
+# crontab: refresh the metrics every 10 minutes
+*/10 * * * * D=/var/lib/node_exporter/textfile; sentinel scan CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC --key ADMIN --format prometheus > "$D/sentinel.prom.tmp"; [ -s "$D/sentinel.prom.tmp" ] && mv "$D/sentinel.prom.tmp" "$D/sentinel.prom"
+```
+
+Use `;` after the scan, not `&&`: with `&&`, a WARN or CRITICAL scan (exit `1` or `2`) would leave the
+metrics stale exactly when they matter. The `[ -s ... ]` check keeps the previous metrics when the scan
+fails outright (exit `10` or `11`) and prints nothing.
 
 ### Standard Process Exit Codes
 `sentinel scan` uses the following exit codes for automation:
