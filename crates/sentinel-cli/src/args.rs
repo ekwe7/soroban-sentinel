@@ -121,6 +121,11 @@ pub enum Commands {
     /// Estimate a contract TTL extension's resource limits
     EstimateGas(EstimateGasArgs),
 
+    /// Verify contract storage compliance against Stellar protocol ceilings
+    AuditLimits(AuditLimitsArgs),
+
+    /// Scaffold an automated GitHub Actions CI workflow for TTL drift scanning
+    GenerateGithubWorkflow(GenerateWorkflowArgs),
     /// Analyze historical scan snapshots to project TTL decay and threshold crossings
     Trend(TrendArgs),
 }
@@ -578,6 +583,10 @@ pub struct ScanArgs {
     #[arg(long, value_name = "LEDGERS")]
     pub critical_threshold: Option<u32>,
 
+    /// Return a nonzero exit code for entries at or above this risk level
+    #[arg(long = "fail-on-risk", value_parser = ["critical"])]
+    pub fail_on_risk: Option<String>,
+
     /// Custom RPC request timeout in seconds (1 to 120, defaults to 10)
     #[arg(long = "rpc-timeout", value_name = "SECS")]
     pub rpc_timeout: Option<u64>,
@@ -1019,6 +1028,65 @@ pub struct CompletionsArgs {
     pub shell: String,
 }
 
+/// Command-line arguments for `sentinel audit-limits`.
+#[derive(Args, Debug, Clone)]
+pub struct AuditLimitsArgs {
+    /// Contract address (C...)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Network name (testnet, mainnet, futurenet, local)
+    #[arg(long, default_value = "testnet")]
+    pub network: String,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Timeout in seconds for RPC requests (1-120)
+    #[arg(long, value_name = "SECONDS")]
+    pub rpc_timeout: Option<u64>,
+
+    /// Maximum retry attempts for transient RPC errors (0-10)
+    #[arg(long, value_name = "COUNT")]
+    pub rpc_max_retries: Option<u32>,
+
+    /// Output format (table, json, text)
+    #[arg(long, default_value = "table", value_parser = ["table", "json", "text"])]
+    pub format: String,
+
+    /// Additional persistent symbol keys to inspect
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Additional persistent base64 XDR keys to inspect
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Additional persistent key expressions to inspect
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+}
+
+/// Command-line arguments for `sentinel generate-github-workflow`.
+#[derive(Args, Debug, Clone)]
+pub struct GenerateWorkflowArgs {
+    /// Output directory for scaffolding workflow (defaults to ".")
+    #[arg(long = "out-dir", default_value = ".", value_name = "PATH")]
+    pub out_dir: std::path::PathBuf,
+
+    /// Cron schedule expression for automated drift scans (defaults to daily "0 0 * * *")
+    #[arg(long, default_value = "0 0 * * *", value_name = "EXPR")]
+    pub cron: String,
+
+    /// Overwrite existing workflow file
+    #[arg(long)]
+    pub force: bool,
+
+    /// Target network to audit in CI
+    #[arg(long, default_value = "mainnet", value_name = "NETWORK")]
+    pub network: String,
+}
 /// Command-line arguments for `sentinel trend`.
 #[derive(Args, Debug, Clone)]
 pub struct TrendArgs {
@@ -1076,6 +1144,7 @@ mod tests {
                 assert!(scan.ledger_seconds.is_none());
                 assert_eq!(scan.sample_window, DEFAULT_SAMPLE_WINDOW_LEDGERS);
                 assert!(scan.baseline.is_none());
+                assert!(scan.fail_on_risk.is_none());
                 assert!(!scan.fail_on_regression);
                 assert!(!scan.tui);
                 assert!(scan.snapshot.is_none());
@@ -1121,6 +1190,8 @@ mod tests {
             "250",
             "--baseline",
             "baseline.json",
+            "--fail-on-risk",
+            "critical",
             "--fail-on-regression",
             "--tui",
             "--otlp-endpoint",
@@ -1143,6 +1214,7 @@ mod tests {
                 assert_eq!(scan.ledger_seconds, Some(5.5));
                 assert_eq!(scan.sample_window, 250);
                 assert_eq!(scan.baseline.as_deref(), Some("baseline.json"));
+                assert_eq!(scan.fail_on_risk.as_deref(), Some("critical"));
                 assert!(scan.fail_on_regression);
                 assert!(scan.tui);
                 assert!(scan.snapshot.is_none());
@@ -1232,6 +1304,90 @@ mod tests {
                 assert_eq!(restore.format, "json");
             }
             _ => panic!("expected restore command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_audit_limits_defaults_and_custom() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+        let defaults = Cli::parse_from(["sentinel", "audit-limits", contract]);
+        match defaults.command {
+            Commands::AuditLimits(limits) => {
+                assert_eq!(limits.contract_id, contract);
+                assert_eq!(limits.network, "testnet");
+                assert_eq!(limits.format, "table");
+                assert!(limits.key.is_empty());
+                assert!(limits.rpc_url.is_none());
+            }
+            _ => panic!("expected audit-limits command"),
+        }
+
+        let custom = Cli::parse_from([
+            "sentinel",
+            "audit-limits",
+            contract,
+            "--network",
+            "mainnet",
+            "--format",
+            "json",
+            "--key",
+            "BALANCE",
+            "--key-xdr",
+            "AAAAFA==",
+            "--key-expr",
+            "sym:Data",
+            "--rpc-timeout",
+            "20",
+            "--rpc-max-retries",
+            "3",
+        ]);
+        match custom.command {
+            Commands::AuditLimits(limits) => {
+                assert_eq!(limits.contract_id, contract);
+                assert_eq!(limits.network, "mainnet");
+                assert_eq!(limits.format, "json");
+                assert_eq!(limits.key, vec!["BALANCE"]);
+                assert_eq!(limits.key_xdr, vec!["AAAAFA=="]);
+                assert_eq!(limits.key_expr, vec!["sym:Data"]);
+                assert_eq!(limits.rpc_timeout, Some(20));
+                assert_eq!(limits.rpc_max_retries, Some(3));
+            }
+            _ => panic!("expected audit-limits command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_generate_workflow_defaults_and_custom() {
+        let defaults = Cli::parse_from(["sentinel", "generate-github-workflow"]);
+        match defaults.command {
+            Commands::GenerateGithubWorkflow(gen) => {
+                assert_eq!(gen.out_dir, std::path::PathBuf::from("."));
+                assert_eq!(gen.cron, "0 0 * * *");
+                assert_eq!(gen.network, "mainnet");
+                assert!(!gen.force);
+            }
+            _ => panic!("expected generate-github-workflow command"),
+        }
+
+        let custom = Cli::parse_from([
+            "sentinel",
+            "generate-github-workflow",
+            "--out-dir",
+            "custom/dir",
+            "--cron",
+            "0 12 * * *",
+            "--network",
+            "testnet",
+            "--force",
+        ]);
+        match custom.command {
+            Commands::GenerateGithubWorkflow(gen) => {
+                assert_eq!(gen.out_dir, std::path::PathBuf::from("custom/dir"));
+                assert_eq!(gen.cron, "0 12 * * *");
+                assert_eq!(gen.network, "testnet");
+                assert!(gen.force);
+            }
+            _ => panic!("expected generate-github-workflow command"),
         }
     }
 

@@ -3,6 +3,8 @@
 //! Use [`super::probabilistic_ttl::estimate_probabilistic_lifetime`] to project
 //! an expiration timestamp from measured ledger close variance.
 
+use super::half_life::{RetentionMode, StorageChurnModel};
+
 /// Target ledger close time in seconds on Stellar/Soroban (approximately 5 seconds per ledger).
 pub const TARGET_LEDGER_CLOSE_SECONDS: f64 = 5.0;
 
@@ -68,9 +70,25 @@ pub fn estimate_horizon_days(live_until: u32, latest_ledger: u32) -> f64 {
     estimate_horizon_days_with_velocity(live_until, latest_ledger, TARGET_LEDGER_CLOSE_SECONDS)
 }
 
+/// Estimates the fixed-point storage retention ratio after `forecast_ledgers`.
+///
+/// The churn rate is derived from the observed mutation count and ledger window.
+/// Static mode uses linear TTL decay; active churn mode uses exponential decay.
+pub fn estimate_retention_after_churn_scaled(
+    mode: RetentionMode,
+    mutations: u32,
+    observation_ledgers: u32,
+    forecast_ledgers: u32,
+    initial_ttl: u32,
+) -> u64 {
+    StorageChurnModel::from_observations(mode, mutations, observation_ledgers)
+        .retention_ratio_scaled(forecast_ledgers, initial_ttl)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::half_life::FIXED_POINT_SCALE;
 
     #[test]
     fn test_positive_remaining_ledgers() {
@@ -154,5 +172,23 @@ mod tests {
         // Boundary cases
         assert_eq!(estimate_remaining_seconds_with_velocity(0, velocity), 0.0);
         assert_eq!(estimate_remaining_seconds_with_velocity(-10, velocity), 0.0);
+    }
+
+    #[test]
+    fn test_churn_retention_uses_observed_mutation_frequency() {
+        let retention = estimate_retention_after_churn_scaled(
+            RetentionMode::ActiveChurn,
+            500,
+            10_000,
+            10,
+            1_000,
+        );
+        assert!(retention < FIXED_POINT_SCALE);
+        assert!(retention > 0);
+
+        assert_eq!(
+            estimate_retention_after_churn_scaled(RetentionMode::Static, 500, 10_000, 250, 1_000,),
+            750_000
+        );
     }
 }

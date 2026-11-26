@@ -121,6 +121,8 @@ async fn main() {
         Commands::Redact(args) => commands::run_redact(args),
         Commands::DryRun(args) => commands::run_dry_run(args).await,
         Commands::EstimateGas(args) => commands::run_estimate_gas(args).await,
+        Commands::AuditLimits(args) => commands::run_audit_limits(args).await,
+        Commands::GenerateGithubWorkflow(args) => commands::run_generate_workflow(args),
         Commands::Trend(args) => commands::run_trend(args),
     };
 

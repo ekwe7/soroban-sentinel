@@ -16,11 +16,13 @@ pub mod events;
 pub mod fee_bump;
 pub mod fee_optimizer;
 pub mod footprint;
+pub mod half_life;
 pub mod footprint_fees;
 pub mod histogram;
 pub mod hysteresis;
 pub mod init_footprint;
 pub mod key_pattern;
+pub mod key_trie;
 pub mod multisig;
 pub mod network_limits;
 pub mod overhead;
@@ -73,6 +75,10 @@ pub use fee_bump::{
 };
 pub use fee_optimizer::{optimize_bump_batch, FeeOptimizerEntry, ScheduledExtension, UrgencyTier};
 pub use footprint::{AtRiskFootprint, FootprintAccess, FootprintValidation, FootprintValidator};
+pub use half_life::{
+    fixed_point_exp_neg, DepletionStep, RetentionMode, StorageChurnModel, FIXED_POINT_SCALE,
+    LN_2_SCALED,
+};
 pub use footprint_fees::{
     billed_kib_units, classify_ledger_key, scale_bytes_fee, stroops_to_xlm, xdr_encoded_len,
     FootprintEntryCost, FootprintEntryInput, FootprintEntryKind, FootprintFeeBreakdown,
@@ -84,7 +90,11 @@ pub use key_pattern::{
     parse_key_pattern, KeyPattern, KeyPatternCandidateInput, KeyPatternToken,
     MAX_KEY_PATTERN_CANDIDATES, MAX_KEY_PATTERN_LEN,
 };
-pub use network_limits::NetworkLimits;
+pub use key_trie::{KeyNamespaceTrie, NamespaceStats, PrefixCollision, TrieNode};
+pub use network_limits::{
+    NetworkLimits, LIMIT_WARN_THRESHOLD_PERCENT, MAX_CONTRACT_DATA_ENTRY_SIZE_BYTES,
+    MAX_CONTRACT_SIZE_BYTES,
+};
 pub use overhead::{
     calculate_storage_overhead, measure_contract_data_overhead, StorageOverheadAnalysis,
     BASE_CONTRACT_DATA_WRAPPER_BYTES,
@@ -118,7 +128,7 @@ pub use storage_audit::{
 pub use ttl::{
     calculate_remaining_ledgers, estimate_horizon_days, estimate_horizon_days_with_velocity,
     estimate_remaining_days, estimate_remaining_seconds, estimate_remaining_seconds_with_velocity,
-    SECONDS_PER_DAY, TARGET_LEDGER_CLOSE_SECONDS,
+    estimate_retention_after_churn_scaled, SECONDS_PER_DAY, TARGET_LEDGER_CLOSE_SECONDS,
 };
 pub use upgrade::{
     detect_contract_upgrade, format_contract_code_hash, ContractUpgradeBaseline,

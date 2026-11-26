@@ -98,6 +98,28 @@ pub fn extract_wasm_hash_from_instance_entry(
     }
 }
 
+/// Extracts the byte length of a compiled contract's WASM payload from its ledger-entry XDR.
+pub fn extract_contract_code_size(entry_xdr_base64: &str) -> SentinelResult<usize> {
+    let entry_data =
+        if let Ok(entry) = LedgerEntry::from_xdr_base64(entry_xdr_base64, safe_xdr_limits()) {
+            entry.data
+        } else {
+            LedgerEntryData::from_xdr_base64(entry_xdr_base64, safe_xdr_limits()).map_err(|e| {
+                SentinelError::InvalidXdrKey(format!(
+                    "Failed to decode base64 contract code XDR: {}",
+                    e
+                ))
+            })?
+        };
+
+    match entry_data {
+        LedgerEntryData::ContractCode(code) => Ok(code.code.as_slice().len()),
+        _ => Err(SentinelError::InvalidXdrKey(
+            "Decoded ledger entry is not ContractCode".to_string(),
+        )),
+    }
+}
+
 /// Derives the base64-encoded `LedgerKey` XDR for a persistent storage key given an `ScVal`.
 pub fn derive_persistent_key_from_scval(
     contract_id: &[u8; 32],

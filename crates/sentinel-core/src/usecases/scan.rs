@@ -8,9 +8,9 @@ use tracing::info;
 
 use crate::adapters::{
     derive_contract_code_key, derive_contract_instance_key, derive_persistent_key_from_scval,
-    derive_persistent_symbol_key, derive_persistent_xdr_key, extract_instance_storage_breakdown,
-    extract_sac_asset_info, extract_wasm_hash_from_instance_entry, parse_contract_id,
-    parse_key_expr, safe_xdr_limits,
+    derive_persistent_symbol_key, derive_persistent_xdr_key, extract_contract_code_size,
+    extract_instance_storage_breakdown, extract_sac_asset_info,
+    extract_wasm_hash_from_instance_entry, parse_contract_id, parse_key_expr, safe_xdr_limits,
 };
 use crate::domain::burn_rate::{calculate_burn_rate, BurnRate, DEFAULT_SAMPLE_WINDOW_LEDGERS};
 use crate::domain::cold_storage::{
@@ -138,6 +138,9 @@ pub struct StorageEntryReport {
     /// Byte size of the entry.
     #[serde(alias = "size_bytes")]
     pub byte_size: usize,
+    /// Byte size of the WASM payload for contract-code entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_code_size_bytes: Option<usize>,
     /// Live-until ledger sequence number.
     pub live_until_ledger: u32,
     /// Remaining ledgers until expiration.
@@ -173,6 +176,7 @@ impl StorageEntryReport {
             entry_type,
             durability,
             byte_size,
+            contract_code_size_bytes: None,
             live_until_ledger,
             remaining_ledgers,
             estimated_remaining_seconds,
@@ -185,6 +189,12 @@ impl StorageEntryReport {
     /// Sets the instance storage keys breakdown.
     pub fn with_instance_storage_keys(mut self, keys: Vec<InstanceStorageBreakdown>) -> Self {
         self.instance_storage_keys = keys;
+        self
+    }
+
+    /// Sets the compiled WASM payload size for a contract-code entry.
+    pub fn with_contract_code_size_bytes(mut self, size_bytes: usize) -> Self {
+        self.contract_code_size_bytes = Some(size_bytes);
         self
     }
 }
@@ -641,6 +651,8 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                     ));
                 }
                 let byte_size = compute_byte_size(&code_entry.entry_xdr_base64);
+                let contract_code_size_bytes =
+                    extract_contract_code_size(&code_entry.entry_xdr_base64)?;
                 let live_until = code_entry.live_until_ledger_seq;
                 let remaining_ledgers = calculate_remaining_ledgers(live_until, latest_ledger);
                 let remaining_seconds =
@@ -653,17 +665,20 @@ impl<R: LedgerReader> ScanContractUseCase<R> {
                 );
 
                 let code_entry_str = code_entry.key_xdr_base64.clone();
-                reports.push(StorageEntryReport::new(
-                    "code_wasm",
-                    EntryType::ContractCode,
-                    Durability::Code,
-                    byte_size,
-                    live_until,
-                    remaining_ledgers,
-                    remaining_seconds,
-                    remaining_days,
-                    status,
-                ));
+                reports.push(
+                    StorageEntryReport::new(
+                        "code_wasm",
+                        EntryType::ContractCode,
+                        Durability::Code,
+                        byte_size,
+                        live_until,
+                        remaining_ledgers,
+                        remaining_seconds,
+                        remaining_days,
+                        status,
+                    )
+                    .with_contract_code_size_bytes(contract_code_size_bytes),
+                );
                 info!(
                     "code_processed: code_entry={} byte_size={} status={}",
                     code_entry_str, byte_size, status
@@ -906,6 +921,7 @@ mod tests {
         assert_eq!(code.remaining_ledgers, 100_000);
         assert_eq!(code.status, RiskLevel::Warn);
         assert!(code.byte_size > 0);
+        assert_eq!(code.contract_code_size_bytes, Some(4));
 
         // 3. Persistent Symbol Entry
         let sym = &report.entries[2];

@@ -38,6 +38,31 @@ pub const EXIT_INVALID_ARGS: i32 = 10;
 /// Exit code: RPC communication, timeout, or network failure.
 pub const EXIT_RPC_FAILURE: i32 = 11;
 
+fn resolve_scan_exit_code(
+    status: RiskLevel,
+    fail_on_risk: bool,
+    fail_on_regression: bool,
+    diff_has_regression: bool,
+) -> i32 {
+    if fail_on_risk {
+        if matches!(status, RiskLevel::Critical | RiskLevel::Archived)
+            || (fail_on_regression && diff_has_regression)
+        {
+            EXIT_CRITICAL_OR_ARCHIVED
+        } else {
+            EXIT_OK
+        }
+    } else if fail_on_regression && diff_has_regression {
+        EXIT_CRITICAL_OR_ARCHIVED
+    } else {
+        match status {
+            RiskLevel::Ok => EXIT_OK,
+            RiskLevel::Warn => EXIT_WARN,
+            RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
+        }
+    }
+}
+
 /// Resolves the appropriate RPC endpoint URL from network preset or command override.
 pub fn resolve_rpc_url(network: &str, rpc_url_override: Option<&str>) -> Result<String, String> {
     if let Some(url) = rpc_url_override {
@@ -589,15 +614,12 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         .as_ref()
         .map(|d| d.summary.has_regression)
         .unwrap_or(false);
-    let final_exit_code = if args.fail_on_regression && diff_has_regression {
-        EXIT_CRITICAL_OR_ARCHIVED
-    } else {
-        match report.overall_status {
-            RiskLevel::Ok => EXIT_OK,
-            RiskLevel::Warn => EXIT_WARN,
-            RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
-        }
-    };
+    let final_exit_code = resolve_scan_exit_code(
+        report.overall_status,
+        args.fail_on_risk.as_deref() == Some("critical"),
+        args.fail_on_regression,
+        diff_has_regression,
+    );
 
     if format == "parquet" {
         return match emit_parquet(&report, args.output.as_deref()) {
@@ -763,6 +785,30 @@ fn apply_alias(args: &mut ScanArgs) -> Result<(), i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fail_on_critical_risk_only_fails_at_critical_or_archived() {
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Ok, true, false, false),
+            EXIT_OK
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Warn, true, false, false),
+            EXIT_OK
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Critical, true, false, false),
+            EXIT_CRITICAL_OR_ARCHIVED
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Archived, true, false, false),
+            EXIT_CRITICAL_OR_ARCHIVED
+        );
+        assert_eq!(
+            resolve_scan_exit_code(RiskLevel::Warn, false, false, false),
+            EXIT_WARN
+        );
+    }
 
     #[cfg(feature = "parquet")]
     #[test]
