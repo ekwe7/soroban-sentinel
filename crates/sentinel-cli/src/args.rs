@@ -38,6 +38,8 @@ pub struct Cli {
 pub enum Commands {
     /// Scan a contract and inspect storage entry TTL status and expiry risk
     Scan(Box<ScanArgs>),
+    /// Model the expiration timeline of storage entries that will not be renewed
+    PrunePlan(PrunePlanArgs),
     /// Export OpenAPI 3.1 webhook contracts offline
     ExportOpenapi(ExportOpenapiArgs),
     /// Score contract health from a fleet manifest
@@ -614,6 +616,10 @@ pub struct ScanArgs {
     pub network: String,
 
     /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), "html" (self-contained HTML5 report), "prometheus", "pushgateway", or "sonarqube" (SonarQube Generic Issues)
+    /// Output format for scan results: text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, or html (self-contained HTML5 report)
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), or "html" (self-contained HTML5 report)
+    /// Output format for scan results: text, json, csv, parquet, sarif, markdown, or pushgateway
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), or "markdown"
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
@@ -766,6 +772,68 @@ pub struct BenchmarkArgs {
     /// Output format for benchmark results: "text" (human-readable table) or "json" (machine-readable)
     #[arg(long = "format", default_value = "text", value_name = "FORMAT")]
     pub format: String,
+/// Command-line arguments for `sentinel prune-plan`.
+///
+/// `--key` variants add active persistent keys used as reference sources, while
+/// `--expire-key` variants mark entries as intentionally expiring. Temporary
+/// entries are always explicit because Soroban RPC cannot enumerate them.
+#[derive(Args, Debug, Clone)]
+pub struct PrunePlanArgs {
+    /// Contract address whose entries may be allowed to expire (C... Strkey format)
+    #[arg(value_name = "CONTRACT_ID")]
+    pub contract_id: String,
+
+    /// Active persistent key symbol to include as a reference source (repeatable)
+    #[arg(long = "key", value_name = "SYMBOL")]
+    pub key: Vec<String>,
+
+    /// Active persistent key encoded as base64 ScVal XDR (repeatable)
+    #[arg(long = "key-xdr", value_name = "BASE64_XDR")]
+    pub key_xdr: Vec<String>,
+
+    /// Active persistent key encoded as a typed expression (repeatable)
+    #[arg(long = "key-expr", value_name = "EXPR")]
+    pub key_expr: Vec<String>,
+
+    /// Persistent key symbol marked for expiration (repeatable)
+    #[arg(long = "expire-key", value_name = "SYMBOL")]
+    pub expire_key: Vec<String>,
+
+    /// Persistent key encoded as base64 ScVal XDR and marked for expiration (repeatable)
+    #[arg(long = "expire-key-xdr", value_name = "BASE64_XDR")]
+    pub expire_key_xdr: Vec<String>,
+
+    /// Persistent key encoded as a typed expression and marked for expiration (repeatable)
+    #[arg(long = "expire-key-expr", value_name = "EXPR")]
+    pub expire_key_expr: Vec<String>,
+
+    /// Temporary key symbol marked for expiration (repeatable)
+    #[arg(long = "temp-key", value_name = "SYMBOL")]
+    pub temp_key: Vec<String>,
+
+    /// Temporary key encoded as a typed expression and marked for expiration (repeatable)
+    #[arg(long = "temp-key-expr", value_name = "EXPR")]
+    pub temp_key_expr: Vec<String>,
+
+    /// Target Stellar network
+    #[arg(long, default_value = "testnet", value_name = "NETWORK")]
+    pub network: String,
+
+    /// Custom Soroban RPC endpoint URL
+    #[arg(long, value_name = "URL", env = "SOROBAN_RPC_URL")]
+    pub rpc_url: Option<String>,
+
+    /// Output format: "text" (table) or "json"
+    #[arg(long, default_value = "text", value_parser = ["text", "json"], value_name = "FORMAT")]
+    pub format: String,
+
+    /// Warning threshold in ledgers used to classify remaining TTL
+    #[arg(long, default_value_t = 120960, value_name = "LEDGERS")]
+    pub warning_threshold: u32,
+
+    /// Critical threshold in ledgers used to classify remaining TTL
+    #[arg(long, value_name = "LEDGERS")]
+    pub critical_threshold: Option<u32>,
 }
 
 /// Command-line arguments for the cost-matrix command.
@@ -1547,6 +1615,19 @@ mod tests {
                 assert!(limits.rpc_url.is_none());
             }
             _ => panic!("expected audit-limits command"),
+    fn test_parse_prune_plan_defaults_and_flags() {
+        let contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+        let defaults = Cli::parse_from(["sentinel", "prune-plan", contract]);
+        match defaults.command {
+            Commands::PrunePlan(args) => {
+                assert_eq!(args.contract_id, contract);
+                assert!(args.expire_key.is_empty());
+                assert!(args.temp_key.is_empty());
+                assert_eq!(args.network, "testnet");
+                assert_eq!(args.format, "text");
+                assert_eq!(args.warning_threshold, 120960);
+            }
+            _ => panic!("expected prune-plan command"),
         }
 
         let custom = Cli::parse_from([
@@ -1615,6 +1696,28 @@ mod tests {
                 assert!(gen.force);
             }
             _ => panic!("expected generate-github-workflow command"),
+            "prune-plan",
+            contract,
+            "--expire-key",
+            "OLD",
+            "--expire-key-expr",
+            "sym:Legacy",
+            "--temp-key",
+            "CACHE",
+            "--key",
+            "LIVE",
+            "--format",
+            "json",
+        ]);
+        match custom.command {
+            Commands::PrunePlan(args) => {
+                assert_eq!(args.expire_key, vec!["OLD"]);
+                assert_eq!(args.expire_key_expr, vec!["sym:Legacy"]);
+                assert_eq!(args.temp_key, vec!["CACHE"]);
+                assert_eq!(args.key, vec!["LIVE"]);
+                assert_eq!(args.format, "json");
+            }
+            _ => panic!("expected prune-plan command"),
         }
     }
 

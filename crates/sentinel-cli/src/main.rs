@@ -88,6 +88,7 @@ async fn main() {
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
         Commands::Scan(args) => commands::run_scan(*args).await,
         Commands::Benchmark(args) => commands::run_benchmark(args).await,
+        Commands::PrunePlan(args) => commands::run_prune_plan(args).await,
         Commands::Bundle(args) => commands::run_bundle(args).await,
         Commands::LintManifest(args) => {
             let (code, summary) = commands::lint_manifest(&args.manifest);

@@ -345,6 +345,7 @@ mod tests {
             network: "testnet".to_string(),
             latest_ledger: 5_400_000,
             ledger_velocity_seconds: 5.0,
+            burn_rate: Default::default(),
             entries: vec![
                 StorageEntryReport::new(
                     "instance",
