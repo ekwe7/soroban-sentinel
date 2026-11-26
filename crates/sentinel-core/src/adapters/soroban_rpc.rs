@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use stellar_xdr::curr::{ReadXdr, SorobanTransactionData};
+use tracing::{debug, info};
 
 use crate::domain::burn_rate::{
     calculate_burn_rate, LedgerCloseSample, DEFAULT_SAMPLE_WINDOW_LEDGERS,
@@ -147,6 +148,85 @@ pub fn validate_rpc_url(url: &str) -> SentinelResult<()> {
         )));
     }
     Ok(())
+}
+
+/// Returns true when a query parameter name or value looks like a secret.
+fn is_likely_secret(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    ["key", "secret", "token", "api"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Returns true when a path segment looks like a Soroban contract/account address.
+fn is_soroban_address(segment: &str) -> bool {
+    segment.len() >= 5 && (segment.starts_with('G') || segment.starts_with('C'))
+}
+
+/// Redacts sensitive information from an RPC URL for safe logging.
+///
+/// - Removes userinfo (`username:password@`)
+/// - Masks query parameter values whose name or value looks like a secret
+/// - Replaces path segments that look like Soroban addresses with `redacted`
+/// - Returns the original string verbatim when nothing needed redaction
+pub fn redact_rpc_url(url: &str) -> String {
+    let mut parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return url.to_string(),
+    };
+
+    let mut redacted = false;
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("");
+        let _ = parsed.set_password(None);
+        redacted = true;
+    }
+
+    if parsed.query().is_some() {
+        let pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let mut new_pairs = Vec::with_capacity(pairs.len());
+        for (key, value) in pairs {
+            if is_likely_secret(&key) || is_likely_secret(&value) {
+                new_pairs.push((key, "redacted".to_string()));
+                redacted = true;
+            } else {
+                new_pairs.push((key, value));
+            }
+        }
+        let query = new_pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+        parsed.set_query(Some(&query));
+    }
+
+    let path = parsed.path().to_string();
+    let new_path = path
+        .split('/')
+        .map(|segment| {
+            if is_soroban_address(segment) {
+                redacted = true;
+                "redacted".to_string()
+            } else {
+                segment.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if redacted {
+        parsed.set_path(&new_path);
+    }
+
+    if !redacted {
+        return url.to_string();
+    }
+
+    parsed.to_string()
 }
 
 /// Parses standard HTTP Retry-After delta-seconds. Invalid values or HTTP-date formats return None.
@@ -342,6 +422,39 @@ impl SorobanRpcClient {
 
     async fn send_rpc_payload<P: Serialize + Sync + ?Sized>(
         &self,
+        method: &'static str,
+        params: P,
+    ) -> SentinelResult<R>
+    where
+        P: Serialize + Send,
+        R: for<'de> Deserialize<'de>,
+    {
+        let request_payload = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            params,
+        };
+        let redacted_url = redact_rpc_url(&self.rpc_url);
+        let key_count = serde_json::to_value(&request_payload)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("params")?
+                    .get("keys")?
+                    .as_array()
+                    .map(|keys| keys.len())
+            });
+
+        // Writes can be accepted before a transport failure is visible.
+        // Only the submission adapter retries an explicit TRY_AGAIN_LATER.
+        let retryable = method != "sendTransaction";
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let started_at = Instant::now();
+
+            let response_result = self
         payload: &P,
         retryable: bool,
     ) -> SentinelResult<Vec<u8>> {
@@ -358,11 +471,32 @@ impl SorobanRpcClient {
             {
                 Ok(response) => {
                     let status = response.status();
+                    info!(
+                        method = method,
+                        rpc_url = %redacted_url,
+                        attempt = attempt,
+                        key_count = key_count,
+                        http_status = status.as_u16(),
+                        latency_ms = started_at.elapsed().as_millis() as u64,
+                        "rpc_request"
+                    );
+
+                    // Check for rate limiting (429) or transient server unavailability (503)
                     if retryable
                         && (status == reqwest::StatusCode::TOO_MANY_REQUESTS
                             || status == reqwest::StatusCode::SERVICE_UNAVAILABLE)
                         && attempt < self.retry_policy.max_retries
                     {
+                        let retry_after = parse_retry_after(response.headers());
+                        let backoff = self.retry_policy.next_delay(attempt, retry_after);
+                        debug!(
+                            method = method,
+                            rpc_url = %redacted_url,
+                            attempt = attempt,
+                            http_status = status.as_u16(),
+                            backoff_ms = backoff.as_millis() as u64,
+                            "rpc_retry_scheduled"
+                        );
                         let backoff = self
                             .retry_policy
                             .next_delay(attempt, parse_retry_after(response.headers()));
@@ -400,17 +534,43 @@ impl SorobanRpcClient {
                     }
                     return Ok(body_bytes);
                 }
+                Err(e) => {
+                    info!(
+                        method = method,
+                        rpc_url = %redacted_url,
+                        attempt = attempt,
+                        latency_ms = started_at.elapsed().as_millis() as u64,
+                        error = %e,
+                        "rpc_request_failed"
+                    );
+
+                    // Retry on connect errors or timeouts if attempts remain
                 Err(error) => {
                     if retryable
                         && (error.is_connect() || error.is_timeout())
                         && attempt < self.retry_policy.max_retries
                     {
+                        let backoff = self.retry_policy.next_delay(attempt, None);
+                        debug!(
+                            method = method,
+                            rpc_url = %redacted_url,
+                            attempt = attempt,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "rpc_retry_scheduled"
+                        );
+                        tokio::time::sleep(backoff).await;
                         tokio::time::sleep(self.retry_policy.next_delay(attempt, None)).await;
                         continue;
                     }
                     if error.is_timeout() {
                         return Err(SentinelError::RpcConnectionTimeout(format!(
                             "Timeout connecting to RPC at {}: {}",
+                            redacted_url, e
+                        )));
+                    } else {
+                        return Err(SentinelError::RpcConnectionTimeout(format!(
+                            "Failed to connect to RPC at {}: {}",
+                            redacted_url, e
                             self.rpc_url, error
                         )));
                     }
@@ -877,6 +1037,37 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn test_redact_rpc_url_userinfo() {
+        let url = "http://user:pass@localhost:8000/soroban/rpc";
+        let redacted = redact_rpc_url(url);
+        assert!(!redacted.contains("user:pass"));
+        assert!(redacted.contains("localhost"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_api_key_query() {
+        let url = "https://rpc.example.com?api_key=sk-12345&other=val";
+        let redacted = redact_rpc_url(url);
+        assert!(redacted.contains("redacted"));
+        assert!(!redacted.contains("sk-12345"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_soroban_address() {
+        let url = "https://rpc.example.com/keys/GABC1234567890abcdefghijklmnopqrstuv";
+        let redacted = redact_rpc_url(url);
+        assert!(redacted.contains("redacted"));
+        assert!(!redacted.contains("GABC1234567890abcdefghijklmnopqrstuv"));
+    }
+
+    #[test]
+    fn test_redact_rpc_url_no_secrets() {
+        let url = "https://soroban-testnet.stellar.org";
+        let redacted = redact_rpc_url(url);
+        assert_eq!(redacted, "https://soroban-testnet.stellar.org");
+    }
 
     #[test]
     fn test_parse_latest_ledger_json() {

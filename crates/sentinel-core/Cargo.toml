@@ -12,6 +12,7 @@ description = "Core domain logic, RPC client, and risk engine for Soroban Sentin
 fuzzing = []
 
 [dependencies]
+tracing.workspace = true
 stellar-xdr.workspace = true
 stellar-strkey.workspace = true
 reqwest.workspace = true
@@ -20,7 +21,6 @@ serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 sha2.workspace = true
 wasmparser.workspace = true
 

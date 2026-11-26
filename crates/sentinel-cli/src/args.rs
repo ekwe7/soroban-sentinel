@@ -1,3 +1,4 @@
+use clap::{ArgAction, Args, Parser, Subcommand};
 use clap::{Args, Parser, Subcommand};
 use sentinel_core::domain::DEFAULT_SAMPLE_WINDOW_LEDGERS;
 
@@ -19,6 +20,18 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Enable verbose diagnostics on stderr. Use -v for summary, -vv for detailed (retries/backoff).
+    #[arg(short = 'v', global = true, action = ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Suppress non-error stderr output. Only show errors.
+    #[arg(short = 'q', global = true)]
+    pub quiet: bool,
+
+    /// Output format for diagnostics: "text" (plain text) or "json" (one JSON object per line).
+    #[arg(long = "log-format", global = true, value_parser = ["text", "json"], default_value = "text")]
+    pub log_format: String,
 }
 
 #[derive(Subcommand, Debug)]
