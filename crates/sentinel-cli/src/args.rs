@@ -41,6 +41,8 @@ pub enum Commands {
     ExportOpenapi(ExportOpenapiArgs),
     /// Score contract health from a fleet manifest
     HealthMatrix(HealthMatrixArgs),
+    /// Benchmark Soroban RPC endpoint performance (latency, throughput, percentiles)
+    Benchmark(BenchmarkArgs),
     /// Rank resolved contract entries by serialized byte size
     TopConsumers(TopConsumersArgs),
     /// Check Soroban RPC connectivity, network identity, and protocol support
@@ -650,6 +652,26 @@ pub struct SchemaArgs {
     /// Path to the manifest JSON file to generate JSON Schema from
     #[arg(long = "manifest", value_name = "PATH")]
     pub manifest: String,
+}
+
+/// Command-line arguments for the `sentinel benchmark-rpc` command.
+#[derive(Args, Debug, Clone)]
+pub struct BenchmarkArgs {
+    /// Required RPC endpoint URL (e.g. https://soroban-testnet.stellar.org)
+    #[arg(value_name = "URL")]
+    pub rpc_url: String,
+
+    /// Number of concurrent requests to issue during benchmark (default: 1)
+    #[arg(long = "concurrency", default_value = "1", value_name = "N")]
+    pub concurrency: usize,
+
+    /// Benchmark duration in seconds (default: 30s)
+    #[arg(long = "duration-secs", default_value = "30", value_name = "SECS")]
+    pub duration_secs: u64,
+
+    /// Output format for benchmark results: "text" (human-readable table) or "json" (machine-readable)
+    #[arg(long = "format", default_value = "text", value_name = "FORMAT")]
+    pub format: String,
 }
 
 /// Command-line arguments for the cost-matrix command.
