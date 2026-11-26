@@ -45,10 +45,17 @@ pub enum Commands {
     TopConsumers(TopConsumersArgs),
     /// Check Soroban RPC connectivity, network identity, and protocol support
     Doctor(DoctorArgs),
+
     /// Measure the connection and response latency of a Soroban RPC endpoint
     TraceRoute(TraceRouteArgs),
     /// Monitor one contract and notify configured incident providers
     Watch(Box<WatchArgs>),
+
+    /// Lint a manifest file and export JSON Schema for IDE autocompletion
+    LintManifest(LintManifestArgs),
+
+    /// Export JSON Schema for IDE autocompletion (VS Code / IntelliJ)
+    Schema(SchemaArgs),
 
     /// Compare the cost of extending contract storage TTL across duration tiers
     CostMatrix(CostMatrixArgs),
@@ -67,6 +74,7 @@ pub enum Commands {
 
     /// Audit contract storage placement, entry sizes, and cost-saving opportunities
     AuditKeys(AuditKeysArgs),
+
     /// Generate a systemd or launchd service definition for autonomous watching
     InstallService(InstallServiceArgs),
 
@@ -568,15 +576,15 @@ pub struct ScanArgs {
     #[arg(long, value_name = "LEDGERS")]
     pub critical_threshold: Option<u32>,
 
-    /// Custom RPC request timeout in seconds
+    /// Custom RPC request timeout in seconds (1 to 120, defaults to 10)
     #[arg(long = "rpc-timeout", value_name = "SECS")]
     pub rpc_timeout: Option<u64>,
 
-    /// Maximum RPC retry attempts
+    /// Maximum RPC retry attempts for transient errors (0 to 10, defaults to 3)
     #[arg(long = "rpc-max-retries", value_name = "N")]
     pub rpc_max_retries: Option<u32>,
 
-    /// Override ledger close velocity in seconds per ledger
+    /// Override ledger close velocity in seconds per ledger (1.0 to 60.0)
     #[arg(long = "ledger-seconds", value_name = "SECS")]
     pub ledger_seconds: Option<f64>,
 
@@ -626,6 +634,22 @@ pub struct ScanArgs {
     /// Target maintenance horizon in days used by recommendations.
     #[arg(long, default_value_t = 30, value_name = "DAYS")]
     pub target_days: u32,
+}
+
+/// Command-line arguments for the `sentinel lint-manifest` command.
+#[derive(Args, Debug, Clone)]
+pub struct LintManifestArgs {
+    /// Path to the manifest JSON file to validate and generate schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
+}
+
+/// Command-line arguments for the `sentinel schema` command.
+#[derive(Args, Debug, Clone)]
+pub struct SchemaArgs {
+    /// Path to the manifest JSON file to generate JSON Schema from
+    #[arg(long = "manifest", value_name = "PATH")]
+    pub manifest: String,
 }
 
 /// Command-line arguments for the cost-matrix command.

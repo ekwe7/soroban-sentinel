@@ -89,6 +89,12 @@ async fn main() {
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
         Commands::Scan(args) => commands::run_scan(*args).await,
         Commands::Bundle(args) => commands::run_bundle(args).await,
+        Commands::LintManifest(args) => {
+            let (code, summary) = commands::lint_manifest(&args.manifest);
+            println!("{}", summary);
+            code
+        }
+        Commands::Schema(args) => commands::schema_command(&args.manifest),
         Commands::AuditKeys(args) => commands::run_audit_keys(args).await,
         Commands::Bump(args) => commands::run_bump(args).await,
         Commands::Network(args) => commands::run_network(args).await,

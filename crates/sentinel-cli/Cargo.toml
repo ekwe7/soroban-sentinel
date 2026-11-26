@@ -38,6 +38,7 @@ arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+schemars = "0.8"
 reqwest.workspace = true
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }

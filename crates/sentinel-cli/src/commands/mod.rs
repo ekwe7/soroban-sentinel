@@ -7,6 +7,7 @@ pub mod check;
 pub mod completions;
 pub mod cost_matrix;
 pub mod diff;
+pub mod doctor;
 pub mod diff_networks;
 pub mod dry_run;
 pub mod estimate_gas;
@@ -21,10 +22,12 @@ pub mod network;
 pub mod redact;
 pub mod restore;
 pub mod scan;
+pub mod schema;
 pub mod service;
 pub mod trace_route;
 #[cfg(feature = "tui")]
 pub mod tui;
+pub mod watch;
 
 pub use audit_keys::run_audit_keys;
 pub use bump::run_bump;
@@ -51,8 +54,8 @@ pub use scan::{
     resolve_rpc_url, resolve_threshold_config, run_scan, EXIT_CRITICAL_OR_ARCHIVED,
     EXIT_INVALID_ARGS, EXIT_OK, EXIT_RPC_FAILURE, EXIT_WARN,
 };
-pub mod doctor;
-pub mod watch;
+
+pub use schema::{generate_schema, lint_manifest, schema_command};
 pub use service::run_install_service;
 
 pub mod export_openapi;
