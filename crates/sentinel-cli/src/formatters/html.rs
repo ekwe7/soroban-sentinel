@@ -372,6 +372,10 @@ mod tests {
             overall_status: RiskLevel::Warn,
             archival_recommendations: Vec::new(),
             sac_asset_info: None,
+            burn_rate: sentinel_core::domain::BurnRate::fallback(),
+            contract_code_hash: None,
+            contract_bytecode_size: None,
+            contract_upgrade: None,
         }
     }
 

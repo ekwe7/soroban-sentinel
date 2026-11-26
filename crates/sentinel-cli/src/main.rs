@@ -7,6 +7,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use sentinel_cli::args::{Cli, Commands};
 use sentinel_cli::commands;
+use sentinel_cli::commands::{run_bundle, run_check, run_cost_matrix, run_scan, EXIT_INVALID_ARGS};
 use sentinel_cli::telemetry::{self, TelemetryConfig};
 use std::env;
 use std::process::Command;
@@ -47,7 +48,7 @@ async fn main() {
     }
 
     let cli = match Cli::try_parse() {
-        Ok(c) => c,
+        Ok(cli) => cli,
         Err(err) => {
             if err.use_stderr() {
                 let mut arguments = env::args().skip(1);

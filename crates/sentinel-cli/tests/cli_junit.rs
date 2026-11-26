@@ -35,6 +35,10 @@ fn make_report(entries: Vec<StorageEntryReport>) -> sentinel_core::usecases::TTL
         overall_status: sentinel_core::domain::RiskLevel::Ok,
         archival_recommendations: Vec::new(),
         sac_asset_info: None,
+        burn_rate: sentinel_core::domain::BurnRate::fallback(),
+        contract_code_hash: None,
+        contract_bytecode_size: None,
+        contract_upgrade: None,
     }
 }
 

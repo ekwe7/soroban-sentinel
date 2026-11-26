@@ -1,4 +1,4 @@
-//! CLI command execution modules.
+// CLI command execution modules.
 
 pub mod audit_keys;
 pub mod bump;
