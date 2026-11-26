@@ -189,32 +189,6 @@ fn unix_timestamp_now() -> i64 {
         .as_secs() as i64
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reconstructs_temporary_symbol_key_xdr() {
-        let contract_id = [7; 32];
-        let entry = StorageEntryReport::new(
-            "temporary:Balance",
-            EntryType::TemporaryData,
-            sentinel_core::Durability::Temporary,
-            8,
-            100,
-            50,
-            1.0,
-            1.0,
-            RiskLevel::Ok,
-        );
-
-        assert_eq!(
-            key_xdr_for_entry(&contract_id, &entry).unwrap(),
-            derive_temporary_symbol_key(&contract_id, "Balance").unwrap()
-        );
-    }
-}
-
 /// Formats Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` (UTC, ISO 8601).
 fn format_epoch_seconds(seconds: i64) -> String {
     let days = seconds.div_euclid(86_400);
@@ -249,6 +223,27 @@ fn civil_date_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconstructs_temporary_symbol_key_xdr() {
+        let contract_id = [7; 32];
+        let entry = StorageEntryReport::new(
+            "temporary:Balance",
+            EntryType::TemporaryData,
+            sentinel_core::Durability::Temporary,
+            8,
+            100,
+            50,
+            1.0,
+            1.0,
+            RiskLevel::Ok,
+        );
+
+        assert_eq!(
+            key_xdr_for_entry(&contract_id, &entry).unwrap(),
+            derive_temporary_symbol_key(&contract_id, "Balance").unwrap()
+        );
+    }
 
     #[test]
     fn test_format_epoch_seconds() {

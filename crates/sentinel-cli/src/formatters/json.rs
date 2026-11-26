@@ -382,6 +382,7 @@ mod tests {
             ],
             overall_status: RiskLevel::Archived,
             archival_recommendations: Vec::new(),
+            ..TTLReport::default()
         };
 
         let parsed: serde_json::Value =
@@ -447,6 +448,7 @@ mod tests {
                 entries: vec![entry, code.clone()],
                 overall_status: RiskLevel::Warn,
                 archival_recommendations: Vec::new(),
+                ..TTLReport::default()
             };
             let parsed: serde_json::Value =
                 serde_json::from_str(&render_json(&report).unwrap()).unwrap();

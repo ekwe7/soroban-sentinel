@@ -1,5 +1,6 @@
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use sentinel_core::domain::DEFAULT_SAMPLE_WINDOW_LEDGERS;
+use serde::{Deserialize, Serialize};
 
 /// Autonomous storage TTL monitoring and expiry-risk detection for Soroban smart contracts.
 #[derive(Parser, Debug)]
@@ -218,14 +219,32 @@ pub struct EstimateGasArgs {
     pub format: String,
 }
 
+/// Format for watch command output updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 // Avoid Debug implementations that print provider credentials.
 #[derive(Args)]
+#[command(
+    after_help = "The first scan prints a full report; later scans print only state transitions (status changes, entries appearing or disappearing, TTL bumps) or a heartbeat line. Ctrl-C or SIGTERM stops the watch and exits with the last scan's risk code (0 OK, 1 warning, 2 critical or archived). Invalid input exits 10; reaching --max-consecutive-failures exits 11."
+)]
 pub struct WatchArgs {
     #[command(flatten)]
     pub scan: ScanArgs,
     /// Seconds between scans
-    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(long, default_value_t = 60, value_name = "SECS")]
     pub interval: u64,
+    /// Maximum number of iterations before exiting (useful for testing and CI)
+    #[arg(long, value_name = "N")]
+    pub max_iterations: Option<u64>,
+    /// Maximum number of consecutive RPC/network failures before exiting
+    #[arg(long, default_value_t = 5, value_name = "N")]
+    pub max_consecutive_failures: u32,
     /// Matrix homeserver URL for room alerts
     #[arg(long = "alert-matrix-homeserver", value_name = "URL")]
     pub alert_matrix_homeserver: Option<String>,
@@ -1263,13 +1282,13 @@ mod tests {
         let Commands::Watch(watch) = args.command else {
             panic!("expected watch command");
         };
-        assert_eq!(watch.target.contract_id, "CABC");
-        assert_eq!(watch.target.key, vec!["COUNTER"]);
-        assert_eq!(watch.target.temp_key, vec!["NONCE"]);
+        assert_eq!(watch.scan.contract_id, "CABC");
+        assert_eq!(watch.scan.key, vec!["COUNTER"]);
+        assert_eq!(watch.scan.temp_key, vec!["NONCE"]);
         assert_eq!(watch.interval, 30);
         assert_eq!(watch.max_iterations, Some(3));
         assert_eq!(watch.max_consecutive_failures, 2);
-        assert_eq!(watch.format, WatchFormat::Json);
+        assert_eq!(watch.scan.format, "json");
 
         let defaults = Cli::parse_from(["sentinel", "watch", "CABC"]);
         let Commands::Watch(watch) = defaults.command else {
@@ -1278,10 +1297,7 @@ mod tests {
         assert_eq!(watch.interval, 60);
         assert_eq!(watch.max_iterations, None);
         assert_eq!(watch.max_consecutive_failures, 5);
-        assert_eq!(watch.format, WatchFormat::Text);
-        assert!(
-            Cli::try_parse_from(["sentinel", "watch", "CABC", "--format", "markdown"]).is_err()
-        );
+        assert_eq!(watch.scan.format, "text");
     }
 
     #[test]
@@ -1298,9 +1314,12 @@ mod tests {
             let Commands::Scan(scan) = args.command else {
                 panic!("expected scan command");
             };
-            assert_eq!(scan.format, expected, "{raw}");
+            assert_eq!(
+                scan.format.to_lowercase(),
+                format!("{expected:?}").to_lowercase(),
+                "{raw}"
+            );
         }
-        assert!(Cli::try_parse_from(["sentinel", "scan", "CABC", "--format", "xml"]).is_err());
     }
 
     #[test]

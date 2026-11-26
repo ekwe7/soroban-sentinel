@@ -55,11 +55,7 @@ fn resolve_scan_exit_code(
     } else if fail_on_regression && diff_has_regression {
         EXIT_CRITICAL_OR_ARCHIVED
     } else {
-        match status {
-            RiskLevel::Ok => EXIT_OK,
-            RiskLevel::Warn => EXIT_WARN,
-            RiskLevel::Critical | RiskLevel::Archived => EXIT_CRITICAL_OR_ARCHIVED,
-        }
+        exit_code_for_status(status)
     }
 }
 
@@ -551,6 +547,13 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         return EXIT_INVALID_ARGS;
     }
 
+    for expr in &args.key_expr {
+        if let Err(err) = sentinel_core::adapters::parse_key_expr(expr) {
+            eprintln!("Error: Invalid key expression '{}': {}", expr, err);
+            return EXIT_INVALID_ARGS;
+        }
+    }
+
     let baseline_snapshot = if let Some(ref path) = args.baseline {
         match load_and_validate_baseline(path, &args.contract_id, &args.network) {
             Ok(s) => Some(s),
@@ -643,16 +646,7 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
             Ok(report) => (report, Some(network_reader), rpc_url),
             Err(err) => {
                 eprintln!("Error: {err}");
-                return match err {
-                    SentinelError::InvalidContractAddress(_)
-                    | SentinelError::InvalidXdrKey(_)
-                    | SentinelError::InvalidThresholdConfig(_)
-                    | SentinelError::InvalidRpcUrl(_) => EXIT_INVALID_ARGS,
-                    SentinelError::RpcConnectionTimeout(_)
-                    | SentinelError::RpcResponseError { .. }
-                    | SentinelError::SerializationError(_) => EXIT_RPC_FAILURE,
-                    _ => EXIT_INVALID_ARGS,
-                };
+                return exit_code_for_error(&err);
             }
         }
     };

@@ -127,6 +127,7 @@ mod tests {
             entries,
             overall_status,
             archival_recommendations: Vec::new(),
+            ..TTLReport::default()
         }
     }
 
