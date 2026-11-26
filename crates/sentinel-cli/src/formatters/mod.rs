@@ -1,5 +1,6 @@
 //! Output formatters for scan reports.
 
+pub mod html;
 pub mod json;
 pub mod junit;
 pub mod markdown;
@@ -11,6 +12,7 @@ pub mod sarif;
 pub mod tabular;
 pub mod text;
 
+pub use html::render_html;
 pub use json::{render_json, render_json_with_diff, JsonEntryReport, JsonSummary, JsonTTLReport};
 pub use junit::{render_junit, JUnitReport, JUnitSummary, JUnitTestCase};
 pub use markdown::render_markdown;
