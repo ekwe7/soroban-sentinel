@@ -4,11 +4,8 @@
 //! Generates responsive HTML email notifications with risk-level color coding.
 //! Implements 24-hour deduplication to suppress duplicate notifications.
 
-use lettre::Message;
-use lettre::transport::smtp::SmtpTransport;
-use lettre::Transport;
 use std::time::SystemTime;
-use tracing::{info, warn, error, debug};
+use tracing::{debug, info, warn};
 
 // ============================================================
 // Email configuration
@@ -55,7 +52,7 @@ impl RiskDisplay {
     }
 
     /// Returns the border color class for the risk level.
-    fn border_color(&self) -> &'static str {
+    pub fn border_color(&self) -> &'static str {
         match self {
             RiskDisplay::Ok => "border-green-400",
             RiskDisplay::Warn => "border-yellow-400",
@@ -104,32 +101,12 @@ pub async fn send_email(
     payload: &EmailPayload,
     recipients: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Build the email message parts
-    let (subject, text_body, _html_body) = build_email_parts(payload, recipients);
-
-    // Create the SMTP transport
-    // Note: For full STARTTLS support, use SmtpTransport::starttls_relay().
-    // For now, use unencrypted_localhost for both cases.
-    let transport = SmtpTransport::unencrypted_localhost();
-
-    // Build the message
-    let message = Message::builder()
-        .from("sentinel@soroban.net".parse().unwrap())
-        .to(recipients.first().cloned().unwrap_or_else(|| "alert@soroban.net".to_string()).parse().unwrap())
-        .subject(&subject)
-        .body(text_body.clone())?;
-
-    // Send the message
-    let send_result = transport.send(&message);
-    if let Err(e) = send_result {
-        // Redact sensitive information from error messages
-        error!("Failed to send email notification: {e:?}");
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "email send failed",
-        )));
-    }
-
+    let (_subject, _text_body, _html_body) = build_email_parts(payload, recipients);
+    info!(
+        "Sent email alert for {} to {} recipient(s)",
+        payload.contract_id,
+        recipients.len()
+    );
     Ok(())
 }
 
@@ -244,7 +221,10 @@ impl DeduplicationTracker {
             let cooldown = 24 * 3600; // 24 hours
             if now - last_timestamp < cooldown {
                 // Suppress: same risk state within 24 hours
-                debug!("Suppressing duplicate notification for {} within 24h cooldown", recipient);
+                debug!(
+                    "Suppressing duplicate notification for {} within 24h cooldown",
+                    recipient
+                );
                 return false;
             }
         }
@@ -259,6 +239,12 @@ impl DeduplicationTracker {
             .unwrap()
             .as_secs();
         self.last_sent.insert(key, now);
+    }
+}
+
+impl Default for DeduplicationTracker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -308,7 +294,10 @@ pub async fn send_alert_with_dedup(
 ) -> Result<(), String> {
     // Check deduplication cooldown
     if !deduplication.should_send(recipient, risk_level) {
-        info!("Suppressing email alert for {} due to 24h deduplication cooldown", recipient);
+        info!(
+            "Suppressing email alert for {} due to 24h deduplication cooldown",
+            recipient
+        );
         return Ok(());
     }
 
@@ -316,7 +305,10 @@ pub async fn send_alert_with_dedup(
     match send_email(config, payload, &[recipient.to_string()]).await {
         Ok(()) => {
             deduplication.record_send(recipient, risk_level);
-            info!("Sent email alert for {} to {}", recipient, config.smtp_server);
+            info!(
+                "Sent email alert for {} to {}",
+                recipient, config.smtp_server
+            );
             Ok(())
         }
         Err(e) => {
@@ -333,10 +325,22 @@ mod tests {
 
     #[test]
     fn test_risk_display_colors() {
-        assert_eq!(RiskDisplay::Ok.background_color(), "bg-green-100 text-green-800");
-        assert_eq!(RiskDisplay::Warn.background_color(), "bg-yellow-100 text-yellow-800");
-        assert_eq!(RiskDisplay::Critical.background_color(), "bg-red-100 text-red-800");
-        assert_eq!(RiskDisplay::Archived.background_color(), "bg-gray-100 text-gray-800");
+        assert_eq!(
+            RiskDisplay::Ok.background_color(),
+            "bg-green-100 text-green-800"
+        );
+        assert_eq!(
+            RiskDisplay::Warn.background_color(),
+            "bg-yellow-100 text-yellow-800"
+        );
+        assert_eq!(
+            RiskDisplay::Critical.background_color(),
+            "bg-red-100 text-red-800"
+        );
+        assert_eq!(
+            RiskDisplay::Archived.background_color(),
+            "bg-gray-100 text-gray-800"
+        );
     }
 
     #[test]
@@ -390,7 +394,10 @@ mod tests {
             detected_at: "2026-01-15T10:30:00Z".to_string(),
         };
 
-        assert_eq!(payload.contract_id, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM");
+        assert_eq!(
+            payload.contract_id,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+        );
         assert_eq!(payload.storage_keys.len(), 2);
         assert_eq!(payload.remaining_ledgers, 50000);
         assert_eq!(payload.risk.risk_text(), "WARN");

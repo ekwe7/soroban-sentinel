@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use serde_json::Value;
 use stellar_xdr::curr::{
     ContractDataDurability, ContractDataEntry, ContractExecutable, ExtensionPoint, Hash,
-    LedgerEntryData, Limits, ScAddress, ScContractInstance, ScSymbol, ScVal, WriteXdr,
+    LedgerEntryData, Limits, ReadXdr, ScAddress, ScContractInstance, ScSymbol, ScVal, WriteXdr,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -3,11 +3,9 @@
 //! a Unix timestamp header. Supports bearer token authorization.
 //! Zeroizes sensitive secrets on drop.
 
-use ring::hmac;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
-use zeroize::{Zeroize};
+use zeroize::Zeroize;
 
 // ============================================================
 // Webhook authentication configuration
@@ -45,7 +43,7 @@ impl WebhookAuthConfig {
     /// # Security
     ///
     /// The caller must not expose this secret in logs or error messages.
-    fn secret(&self) -> &[u8] {
+    pub fn secret(&self) -> &[u8] {
         &self.secret
     }
 
@@ -77,7 +75,11 @@ impl AuthenticatedWebhookConfig {
     /// Creates a new authenticated webhook config.
     ///
     /// The secret is zeroized on drop.
-    pub fn new(url: String, secret: Vec<u8>, token: Option<String>) -> Result<Self, WebhookAuthError> {
+    pub fn new(
+        url: String,
+        secret: Vec<u8>,
+        token: Option<String>,
+    ) -> Result<Self, WebhookAuthError> {
         if url.is_empty() {
             return Err(WebhookAuthError::MissingUrl);
         }
@@ -123,14 +125,61 @@ pub enum WebhookAuthError {
 /// Timestamp in Unix epoch seconds.
 type Timestamp = u64;
 
+/// Base64 encoding table for HTTP header transmission.
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 /// Compute the HMAC-SHA256 signature for the given body bytes.
 ///
 /// The signature is calculated over the exact serialized JSON request body
 /// that will be transmitted.
 pub fn compute_hmac_sha256(secret: &[u8], body: &[u8]) -> Result<Vec<u8>, WebhookAuthError> {
-    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, secret);
-    let tag = hmac::sign(&signing_key, body);
-    Ok(tag.as_ref().to_vec())
+    if secret.is_empty() {
+        return Err(WebhookAuthError::MissingSecret);
+    }
+    const BLOCK_SIZE: usize = 64;
+    let mut key = [0u8; BLOCK_SIZE];
+    if secret.len() > BLOCK_SIZE {
+        let hash = Sha256::digest(secret);
+        key[..32].copy_from_slice(&hash);
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+    let mut ipad = [0x36u8; BLOCK_SIZE];
+    let mut opad = [0x5cu8; BLOCK_SIZE];
+    for i in 0..BLOCK_SIZE {
+        ipad[i] ^= key[i];
+        opad[i] ^= key[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(body);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_hash);
+    Ok(outer.finalize().to_vec())
 }
 
 /// Format the current time as a Unix epoch timestamp.
@@ -142,7 +191,7 @@ pub fn format_timestamp() -> Result<Timestamp, WebhookAuthError> {
 }
 
 /// Sign a webhook request body with HMAC-SHA256 and attach headers.
-
+///
 /// # Signing process:
 /// 1. Calculate HMAC-SHA256 signature over the exact JSON body
 /// 2. Attach signature via `X-Sentinel-Signature` header
@@ -200,7 +249,7 @@ impl WebhookSigner {
         };
 
         // Base64-encode the signature for HTTP header transmission
-        let signature_b64 = STANDARD.encode(&signature_bytes);
+        let signature_b64 = base64_encode(&signature_bytes);
 
         // Format Unix timestamp
         let timestamp = match format_timestamp() {
@@ -235,7 +284,7 @@ impl Drop for WebhookSigner {
 }
 
 /// Sends an authenticated webhook notification.
-
+///
 /// # Workflow
 /// 1. Serialize the alert payload to JSON
 /// 2. Sign the JSON body with HMAC-SHA256
@@ -271,7 +320,10 @@ pub async fn send_webhook_alert(
 
     match response {
         Ok(_) => {
-            eprintln!("Sent webhook alert to {} with signature (timestamp: {})", signer.url, timestamp);
+            eprintln!(
+                "Sent webhook alert to {} with signature (timestamp: {})",
+                signer.url, timestamp
+            );
             Ok(())
         }
         Err(e) => {
@@ -338,7 +390,11 @@ mod tests {
 
     #[test]
     fn test_sign_body_creates_headers() {
-        let mut signer = WebhookSigner::new(b"secret-key-for-hmac".to_vec(), Some("test-token".to_string())).unwrap();
+        let mut signer = WebhookSigner::new(
+            b"secret-key-for-hmac".to_vec(),
+            Some("test-token".to_string()),
+        )
+        .unwrap();
         signer.set_url("https://example.com/webhook");
 
         let payload = serde_json::json!({
@@ -346,9 +402,8 @@ mod tests {
             "risk": "WARN"
         });
 
-        let (_signature, timestamp, headers) = signer.sign_body(
-            serde_json::to_string(&payload).unwrap().as_bytes()
-        );
+        let (_signature, timestamp, headers) =
+            signer.sign_body(serde_json::to_string(&payload).unwrap().as_bytes());
 
         // Verify timestamp is a reasonable number
         assert!(timestamp > 1_700_000_000);
@@ -358,11 +413,15 @@ mod tests {
         assert!(has_auth, "Expected Authorization header");
 
         // Verify X-Sentinel-Signature header is present
-        let has_sig = headers.iter().any(|(name, _)| name == "X-Sentinel-Signature");
+        let has_sig = headers
+            .iter()
+            .any(|(name, _)| name == "X-Sentinel-Signature");
         assert!(has_sig, "Expected X-Sentinel-Signature header");
 
         // Verify X-Sentinel-Timestamp header is present
-        let has_ts = headers.iter().any(|(name, _)| name == "X-Sentinel-Timestamp");
+        let has_ts = headers
+            .iter()
+            .any(|(name, _)| name == "X-Sentinel-Timestamp");
         assert!(has_ts, "Expected X-Sentinel-Timestamp header");
     }
 
@@ -373,12 +432,14 @@ mod tests {
 
         let payload = serde_json::json!({"test": "payload"});
 
-        let (_signature, _timestamp, headers) = signer.sign_body(
-            serde_json::to_string(&payload).unwrap().as_bytes()
-        );
+        let (_signature, _timestamp, headers) =
+            signer.sign_body(serde_json::to_string(&payload).unwrap().as_bytes());
 
         // Verify no Authorization header when no token is configured
         let has_auth = headers.iter().any(|(name, _)| name == "Authorization");
-        assert!(!has_auth, "Expected no Authorization header when no token configured");
+        assert!(
+            !has_auth,
+            "Expected no Authorization header when no token configured"
+        );
     }
 }

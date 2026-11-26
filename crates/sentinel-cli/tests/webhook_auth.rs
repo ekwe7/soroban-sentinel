@@ -1,6 +1,5 @@
 //! Webhook authentication tests for Soroban Sentinel.
 
-use clap::Parser;
 use sentinel_cli::alerts::{compute_hmac_sha256, format_timestamp, WebhookSigner};
 
 #[tokio::test]
@@ -86,7 +85,7 @@ async fn test_sign_body_without_token() {
 
     let payload = serde_json::json!({"test": "payload"});
 
-    let (signature, timestamp, headers) =
+    let (_signature, _timestamp, headers) =
         signer.sign_body(serde_json::to_string(&payload).unwrap().as_bytes());
 
     // Verify no Authorization header when no token is configured

@@ -1,10 +1,5 @@
 //! Email alert notification tests for Soroban Sentinel.
 
-use std::time::Duration;
-
-use clap::Parser;
-use sentinel_cli::Cli;
-
 #[tokio::test]
 async fn test_email_payload_creation() {
     let payload = sentinel_cli::EmailPayload {

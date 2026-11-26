@@ -12,6 +12,7 @@ pub mod telemetry;
 #[cfg(feature = "tui")]
 pub mod tui;
 
+pub use alerts::{EmailPayload, RiskDisplay, WebhookSigner};
 pub use args::*;
 pub use commands::*;
 #[cfg(feature = "parquet")]
