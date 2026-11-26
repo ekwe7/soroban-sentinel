@@ -12,6 +12,7 @@ pub mod debt;
 pub mod durability_migration;
 pub mod entry;
 pub mod envelope_packer;
+pub mod events;
 pub mod fee_bump;
 pub mod fee_optimizer;
 pub mod footprint;
@@ -62,6 +63,10 @@ pub use entry::{Durability, EntryType, InstanceStorageBreakdown, SacAssetInfo, S
 pub use envelope_packer::{
     calculate_batch_envelope_size, estimate_entry_footprint_bytes, pack_extension_batches,
     BASE_ENVELOPE_OVERHEAD_BYTES, DEFAULT_ENTRY_FOOTPRINT_BYTES,
+};
+pub use events::{
+    classify_state_archival_event, ContractEvent, DecodedContractEvent, SorobanEventType,
+    StateArchivalEventKind,
 };
 pub use fee_bump::{
     recommend_inclusion_fee, FeeBumpError, FeePercentiles, FeeRecommendation, FeeUrgency,

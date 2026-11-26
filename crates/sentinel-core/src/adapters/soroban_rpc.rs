@@ -2,11 +2,14 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use stellar_xdr::curr::{ReadXdr, SorobanTransactionData};
+use stellar_xdr::curr::{ReadXdr, ScVal, SorobanTransactionData};
 use tracing::{debug, info};
+
+use crate::adapters::xdr_keys::{parse_contract_id, safe_xdr_limits};
+use crate::domain::events::{ContractEvent, DecodedContractEvent, SorobanEventType};
 
 use crate::domain::burn_rate::{
     calculate_burn_rate, LedgerCloseSample, DEFAULT_SAMPLE_WINDOW_LEDGERS,
@@ -17,10 +20,16 @@ use crate::domain::TARGET_LEDGER_CLOSE_SECONDS;
 use crate::error::{SentinelError, SentinelResult};
 use crate::ports::reader::{LatestLedgerInfo, LedgerReader, RawLedgerEntry};
 use crate::ports::simulator::SimulationEngine;
+use crate::ports::EventStreamReader;
 
 /// Maximum number of keys allowed in a single `getLedgerEntries` request by Soroban RPC.
 pub const MAX_KEYS_PER_REQUEST: usize = 200;
 
+/// Maximum number of events requested per `getEvents` page.
+pub const MAX_EVENTS_PER_PAGE: u32 = 100;
+
+/// Safety bound on `getEvents` pagination loops to prevent unbounded reads.
+pub const MAX_EVENT_PAGES: usize = 100;
 /// Maximum number of JSON-RPC calls sent in one HTTP batch.
 pub const MAX_BATCH_REQUESTS: usize = 20;
 
@@ -773,6 +782,88 @@ fn raw_ledger_entry(item: RpcLedgerEntryItem) -> RawLedgerEntry {
 }
 
 #[async_trait]
+impl EventStreamReader for SorobanRpcClient {
+    async fn get_contract_events(
+        &self,
+        contract_id: &str,
+        start_ledger: u32,
+    ) -> SentinelResult<Vec<ContractEvent>> {
+        let contract_bytes = parse_contract_id(contract_id)?;
+        let canonical_id = stellar_strkey::Contract(contract_bytes).to_string();
+
+        let mut cursor: Option<String> = None;
+        let mut parsed = Vec::new();
+        let mut seen = HashSet::new();
+
+        for _ in 0..MAX_EVENT_PAGES {
+            let params = GetEventsParams {
+                start_ledger,
+                filters: vec![GetEventsFilter {
+                    contract_ids: vec![canonical_id.as_str()],
+                }],
+                pagination: GetEventsPagination {
+                    limit: MAX_EVENTS_PER_PAGE,
+                    cursor: cursor.as_deref(),
+                },
+            };
+
+            let result: GetEventsResult = self.send_rpc_request("getEvents", params).await?;
+            let page_len = result.events.len();
+            let mut last_paging_token = None;
+
+            for item in result.events {
+                if let Some(token) = item.paging_token.clone() {
+                    last_paging_token = Some(token);
+                }
+                if seen.insert(item.id.clone()) {
+                    parsed.push(decode_contract_event(item));
+                }
+            }
+
+            if page_len == 0 {
+                break;
+            }
+
+            let next_cursor = result.cursor.or(last_paging_token);
+            match next_cursor {
+                Some(next) if cursor.as_deref() != Some(next.as_str()) => {
+                    cursor = Some(next);
+                }
+                _ => break,
+            }
+        }
+
+        Ok(parsed)
+    }
+}
+
+fn decode_contract_event(item: RpcContractEventItem) -> ContractEvent {
+    let topics = item
+        .topic
+        .iter()
+        .filter_map(|topic| decode_scval(topic))
+        .collect();
+    let value = item.value.as_deref().and_then(decode_scval);
+
+    ContractEvent::from_decoded(DecodedContractEvent {
+        id: item.id,
+        paging_token: item.paging_token,
+        ledger: item.ledger,
+        ledger_close_time: item.ledger_close_time,
+        event_type: SorobanEventType::from_rpc_str(&item.event_type),
+        contract_id: item.contract_id,
+        topics,
+        value,
+        tx_hash: item.tx_hash,
+        in_successful_contract_call: item.in_successful_contract_call.unwrap_or(false),
+    })
+}
+
+fn decode_scval(base64: &str) -> Option<ScVal> {
+    ScVal::from_xdr_base64(base64, safe_xdr_limits()).ok()
+}
+
+#[async_trait]
 impl SimulationEngine for SorobanRpcClient {
     async fn simulate_transaction(
         &self,
@@ -874,6 +965,61 @@ struct RpcLedgerItem {
     sequence: u32,
     #[serde(deserialize_with = "deserialize_close_time_opt")]
     ledger_close_time: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsParams<'a> {
+    start_ledger: u32,
+    filters: Vec<GetEventsFilter<'a>>,
+    pagination: GetEventsPagination<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsFilter<'a> {
+    contract_ids: Vec<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsPagination<'a> {
+    limit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cursor: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetEventsResult {
+    #[serde(default)]
+    events: Vec<RpcContractEventItem>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RpcContractEventItem {
+    #[serde(rename = "type")]
+    event_type: String,
+    ledger: u32,
+    #[serde(default, deserialize_with = "deserialize_close_time_opt")]
+    ledger_close_time: Option<i64>,
+    #[serde(default)]
+    contract_id: Option<String>,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    paging_token: Option<String>,
+    #[serde(default)]
+    topic: Vec<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    tx_hash: Option<String>,
+    #[serde(default)]
+    in_successful_contract_call: Option<bool>,
 }
 
 fn deserialize_close_time_opt<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>

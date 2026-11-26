@@ -29,7 +29,8 @@ pub use snapshot::{
 };
 pub use soroban_rpc::{
     redact_rpc_url, validate_rpc_url, RetryPolicy, SorobanRpcClient, DEFAULT_BASE_RETRY_DELAY_MS,
-    DEFAULT_MAX_RETRIES, MAX_BATCH_REQUESTS, MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
+    DEFAULT_MAX_RETRIES, MAX_BATCH_REQUESTS, MAX_EVENTS_PER_PAGE, MAX_EVENT_PAGES,
+    MAX_KEYS_PER_REQUEST, MAX_RPC_RESPONSE_BYTES,
 };
 pub use stellar_account::fetch_account_signer_config;
 pub use wasm_sections::{analyze_wasm, MAX_WASM_ANALYSIS_BYTES};
