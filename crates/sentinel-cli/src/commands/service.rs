@@ -175,7 +175,7 @@ fn validate_generated(service_type: &str, rendered: &str) -> Result<(), String> 
 fn write_service(
     dir: &Path,
     filename: &str,
-    service_type: &str,
+    _service_type: &str,
     rendered: &str,
 ) -> Result<(), String> {
     fs::create_dir_all(dir)
@@ -187,7 +187,7 @@ fn write_service(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if service_type == "systemd" {
+        let mode = if _service_type == "systemd" {
             0o644
         } else {
             0o600

@@ -152,6 +152,20 @@ pub struct WatchArgs {
     /// Seconds between scans
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
     pub interval: u64,
+    /// Matrix homeserver URL for room alerts
+    #[arg(long = "alert-matrix-homeserver", value_name = "URL")]
+    pub alert_matrix_homeserver: Option<String>,
+    /// Matrix room ID for room alerts
+    #[arg(long = "alert-matrix-room", value_name = "ROOM_ID")]
+    pub alert_matrix_room: Option<String>,
+    /// Matrix access token for room alerts
+    #[arg(
+        long = "alert-matrix-token",
+        env = "SENTINEL_ALERT_MATRIX_TOKEN",
+        value_name = "TOKEN",
+        hide_env_values = true
+    )]
+    pub alert_matrix_token: Option<String>,
     #[arg(long, env = "PAGERDUTY_ROUTING_KEY", hide_env_values = true)]
     pub pagerduty_routing_key: Option<String>,
     #[arg(long, env = "OPSGENIE_API_KEY", hide_env_values = true)]
@@ -193,6 +207,13 @@ pub struct WatchArgs {
     #[arg(long, default_value = "datadoghq.com", value_name = "SITE",
           value_parser = ["datadoghq.com", "datadoghq.eu"])]
     pub datadog_site: String,
+    /// Google Chat incoming webhook URL for risk alerts
+    #[arg(
+        long = "alert-google-chat",
+        value_name = "WEBHOOK_URL",
+        hide_env_values = true
+    )]
+    pub alert_google_chat: Option<String>,
     /// Microsoft Teams incoming webhook URL for Adaptive Card alerts
     #[arg(
         long = "alert-teams",

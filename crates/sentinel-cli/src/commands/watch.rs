@@ -197,6 +197,30 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
         }
     };
 
+    let matrix_options = (
+        args.alert_matrix_homeserver,
+        args.alert_matrix_room,
+        args.alert_matrix_token,
+    );
+    let mut matrix = match matrix_options {
+        (None, None, None) => None,
+        (Some(homeserver), Some(room), Some(token)) => {
+            match MatrixAlertDispatcher::new(&homeserver, room, token) {
+                Ok(dispatcher) => Some(dispatcher),
+                Err(error) => {
+                    eprintln!("Error: {error}");
+                    return EXIT_INVALID_ARGS;
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "Error: --alert-matrix-homeserver, --alert-matrix-room, and --alert-matrix-token must be provided together"
+            );
+            return EXIT_INVALID_ARGS;
+        }
+    };
+
     // Build the optional Datadog adapter when credentials are provided.
     let mut datadog: Option<DatadogAdapter> = if let Some(api_key) = args.datadog_api_key {
         let site = match DatadogSite::parse(&args.datadog_site) {
@@ -238,6 +262,11 @@ pub async fn run_watch(args: WatchArgs) -> i32 {
                 match output {
                     Ok(output) => println!("{output}"),
                     Err(error) => eprintln!("Watch report failed: {error}"),
+                }
+                if let Some(dispatcher) = matrix.as_mut() {
+                    if let Err(error) = dispatcher.observe(&report).await {
+                        eprintln!("Matrix notification failed: {error}");
+                    }
                 }
                 for dispatcher in &mut dispatchers {
                     if let Err(error) = dispatcher.observe(&report, &keys).await {

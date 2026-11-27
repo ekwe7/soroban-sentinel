@@ -2,6 +2,7 @@
 
 pub mod acceleration;
 pub mod alias;
+pub mod anomaly;
 pub mod budget;
 pub mod bundle;
 pub mod burn_rate;
@@ -18,6 +19,7 @@ pub mod footprint_fees;
 pub mod histogram;
 pub mod init_footprint;
 pub mod key_pattern;
+pub mod key_ranges;
 pub mod multisig;
 pub mod network_limits;
 pub mod overhead;
@@ -42,6 +44,7 @@ pub use acceleration::{
     DEFAULT_ACCELERATION_TOLERANCE_RATIO,
 };
 pub use alias::{AliasError, AliasRegistry};
+pub use anomaly::{LedgerAnomalyFilter, ANOMALY_Z_SCORE_THRESHOLD, DEFAULT_ANOMALY_WINDOW_SIZE};
 pub use bundle::{
     plan_bundle_footprints, BundleError, BundleFootprint, MAX_BUNDLE_FOOTPRINT_ENTRIES,
 };
@@ -75,6 +78,7 @@ pub use key_pattern::{
     parse_key_pattern, KeyPattern, KeyPatternCandidateInput, KeyPatternToken,
     MAX_KEY_PATTERN_CANDIDATES, MAX_KEY_PATTERN_LEN,
 };
+pub use key_ranges::derive_key_prefix_range;
 pub use network_limits::NetworkLimits;
 pub use overhead::{
     calculate_storage_overhead, measure_contract_data_overhead, StorageOverheadAnalysis,
@@ -109,7 +113,7 @@ pub use storage_audit::{
 pub use ttl::{
     calculate_remaining_ledgers, estimate_horizon_days, estimate_horizon_days_with_velocity,
     estimate_remaining_days, estimate_remaining_seconds, estimate_remaining_seconds_with_velocity,
-    SECONDS_PER_DAY, TARGET_LEDGER_CLOSE_SECONDS,
+    filter_ledger_velocity, SECONDS_PER_DAY, TARGET_LEDGER_CLOSE_SECONDS,
 };
 pub use upgrade::{
     detect_contract_upgrade, format_contract_code_hash, ContractUpgradeBaseline,

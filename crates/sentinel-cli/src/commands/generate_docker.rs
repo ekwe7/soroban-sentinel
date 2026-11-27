@@ -1,4 +1,4 @@
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
@@ -117,6 +117,7 @@ fn write_new_file(path: &Path, contents: &str) -> std::io::Result<()> {
     // Ensure restrictive defaults for generated deployment files (subject to umask).
     #[cfg(unix)]
     {
+        use std::fs;
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
     }
