@@ -76,6 +76,7 @@ async fn main() {
         Commands::HealthMatrix(args) => commands::run_health_matrix(args).await,
         Commands::TopConsumers(args) => commands::run_top_consumers(args).await,
         Commands::Check(args) => commands::run_check(args).await,
+        Commands::Completions(args) => commands::run_completions(args.shell),
         Commands::CostMatrix(args) => commands::run_cost_matrix(args).await,
         Commands::Scan(args) => commands::run_scan(*args).await,
         Commands::PrunePlan(args) => commands::run_prune_plan(args).await,

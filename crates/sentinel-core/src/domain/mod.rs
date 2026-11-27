@@ -35,6 +35,7 @@ pub mod upgrade;
 pub mod wasm_analysis;
 pub mod wasm_graph;
 pub mod wasm_imports;
+pub mod schedule;
 
 pub use acceleration::{
     AcceleratedDecayWarning, AccelerationError, AccelerationReport, DecayClassification,
@@ -100,6 +101,9 @@ pub use risk::{
 pub use scenario::{
     evaluate_protocol_scenario, NetworkRentParameters, ProtocolScenarioReport, ScenarioEntry,
     ScenarioEntryImpact, ScenarioError,
+};
+pub use schedule::{
+    MaintenanceWindow, ExpirationCalendar, MaintenanceWindowGranularity, urgent_windows,
 };
 pub use shadow_keys::{detect_shadowed_keys, KeyCollisionKind, KeyCollisionWarning};
 pub use storage_audit::{

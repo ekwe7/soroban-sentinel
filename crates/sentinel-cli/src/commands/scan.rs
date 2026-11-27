@@ -22,6 +22,8 @@ use crate::args::ScanArgs;
 #[cfg(feature = "parquet")]
 use crate::formatters::render_parquet;
 use crate::formatters::{
+    render_csv, render_junit, render_json_with_diff, render_markdown, render_ndjson,
+    render_sarif, render_text_with_diff_and_options,
     render_csv, render_html, render_json_with_diff, render_markdown, render_ndjson,
     render_pushgateway, render_sarif, render_text_with_diff_and_options,
 };
@@ -637,8 +639,12 @@ pub async fn run_scan(mut args: ScanArgs) -> i32 {
         "pushgateway" => Ok(render_pushgateway(&report)),
         "sarif" => render_sarif(&report),
         "markdown" => Ok(render_markdown(&report)),
+        "junit" => Ok(render_junit(&report, baseline_diff.as_ref())),
         other => {
             let supported = if cfg!(feature = "parquet") {
+                "text, json, ndjson, csv, parquet, sarif, markdown, junit"
+            } else {
+                "text, json, ndjson, csv, sarif, markdown, junit"
                 "text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, html"
             } else {
                 "text, json, ndjson, csv, sarif, markdown, pushgateway, html"

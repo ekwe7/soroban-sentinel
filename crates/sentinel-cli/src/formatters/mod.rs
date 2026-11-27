@@ -10,6 +10,7 @@ pub mod pushgateway;
 pub mod sarif;
 pub mod tabular;
 pub mod text;
+pub mod junit;
 
 pub use html::render_html;
 pub use json::{render_json, render_json_with_diff, JsonEntryReport, JsonSummary, JsonTTLReport};
@@ -24,3 +25,4 @@ pub use text::{
     format_with_commas, is_color_disabled, is_no_color_env, render_text, render_text_with_diff,
     render_text_with_diff_and_options, render_text_with_options,
 };
+pub use junit::render_junit;

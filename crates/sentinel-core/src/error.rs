@@ -55,6 +55,12 @@ pub enum SentinelError {
 
     #[error("Unexpected network config setting variant: {0}")]
     UnexpectedNetworkConfigVariant(String),
+
+    #[error("Unsupported protocol: found {found}, required {required}")]
+    UnsupportedProtocol { found: u32, required: u32 },
+
+    #[error("RPC capability response missing expected version fields")]
+    RpcCapabilityFieldsMissing,
 }
 
 /// Convenience type alias for `Result<T, SentinelError>`.

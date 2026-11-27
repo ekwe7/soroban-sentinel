@@ -84,6 +84,9 @@ pub enum Commands {
     /// Estimate the fee for extending a contract footprint TTL
     Forecast(ForecastArgs),
 
+    /// Print shell completions for the named shell to stdout
+    Completions(CompletionsArgs),
+
     /// Display network state-archival and contract entry limits
     Network(NetworkArgs),
     /// Estimate a contract TTL extension's resource limits
@@ -400,6 +403,8 @@ pub struct ScanArgs {
     #[arg(long, default_value = "testnet", value_name = "NETWORK")]
     pub network: String,
 
+    /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown", or "junit" (JUnit XML for CI/CD test-runner integration)
+    #[arg(long, default_value = "text", value_parser = ["text", "json", "ndjson", "csv", "parquet", "sarif", "markdown", "junit"], value_name = "FORMAT")]
     /// Output format for scan results: text, json, ndjson, csv, parquet, sarif, markdown, pushgateway, or html (self-contained HTML5 report)
     /// Output format for scan results: "text" (colorized ASCII table), "json" (machine-readable), "ndjson" (line-delimited JSON per storage entry), "csv" (flat tabular export), "parquet" (binary columnar export, requires the `parquet` Cargo feature), "sarif" (GitHub Code Scanning), "markdown" (CI summary), or "html" (self-contained HTML5 report)
     /// Output format for scan results: text, json, csv, parquet, sarif, markdown, or pushgateway
@@ -839,6 +844,26 @@ pub struct NetworkArgs {
 
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
+}
+
+/// Command-line arguments for `sentinel completions`.
+#[derive(Args, Debug, Clone)]
+pub struct CompletionsArgs {
+    /// Shell for which to generate completions (bash, elvish, fish, powershell, zsh)
+    #[arg(value_name = "SHELL", value_parser = SUPPORTED_SHELL_PARSER())]
+    pub shell: String,
+}
+
+fn SUPPORTED_SHELL_PARSER() -> clap::builder::ValueParser {
+    clap::builder::ValueParser::new(|value: &str| {
+        match value.to_lowercase().as_str() {
+            "bash" | "elvish" | "fish" | "powershell" | "zsh" => Ok(value.to_string()),
+            _ => Err(format!(
+                "unsupported shell '{}', supported shells: bash, elvish, fish, powershell, zsh",
+                value
+            )),
+        }
+    })
 }
 
 /// Command-line arguments for `sentinel install-service`.

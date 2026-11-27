@@ -115,3 +115,31 @@ pub struct RpcNetwork {
     pub passphrase: String,
     pub protocol_version: u32,
 }
+
+/// Version and capability metadata returned by a Soroban RPC node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcCapabilities {
+    /// Protocol version reported by the RPC node, when available.
+    pub protocol_version: Option<u32>,
+}
+
+impl RpcCapabilities {
+    /// Create a new `RpcCapabilities`.
+    pub fn new(protocol_version: Option<u32>) -> Self {
+        Self { protocol_version }
+    }
+
+    /// Checks compatibility against a required minimum protocol version.
+    pub fn check_compatibility(&self, min_protocol: u32) -> Result<(), crate::error::SentinelError> {
+        let found = self
+            .protocol_version
+            .ok_or(crate::error::SentinelError::RpcCapabilityFieldsMissing)?;
+        if found < min_protocol {
+            return Err(crate::error::SentinelError::UnsupportedProtocol {
+                found,
+                required: min_protocol,
+            });
+        }
+        Ok(())
+    }
+}

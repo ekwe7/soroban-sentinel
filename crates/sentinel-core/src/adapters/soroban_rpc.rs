@@ -251,6 +251,43 @@ impl SorobanRpcClient {
             .await
     }
 
+    /// Returns protocol and capability metadata from the RPC node.
+    ///
+    /// The returned [`RpcCapabilities`] is intended for compatibility guards such as
+    /// [`RpcCapabilities::check_compatibility`]. Nodes that omit optional version fields
+    /// return `None` for the corresponding field rather than failing the request.
+    pub async fn get_capabilities(&self) -> SentinelResult<crate::ports::reader::RpcCapabilities> {
+        let response: serde_json::Value = self
+            .send_rpc_request("getVersionInfo", serde_json::json!({}))
+            .await?;
+
+        let protocol_version = response
+            .get("protocolVersion")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32);
+
+        Ok(crate::ports::reader::RpcCapabilities::new(protocol_version))
+    }
+
+    /// Checks whether this RPC node satisfies a minimum protocol version requirement.
+    ///
+    /// This combines the protocol version reported in `getLatestLedger` with the version
+    /// reported by `getVersionInfo` where available, preferring the most specific value.
+    pub async fn check_compatibility(
+        &self,
+        min_protocol: u32,
+    ) -> SentinelResult<()> {
+        let ledger = self.get_latest_ledger().await?;
+        let caps = self.get_capabilities().await?;
+
+        let found = caps
+            .protocol_version
+            .unwrap_or(ledger.protocol_version);
+
+        crate::ports::reader::RpcCapabilities::new(Some(found))
+            .check_compatibility(min_protocol)
+    }
+
     /// Fetch Soroban inclusion fee percentiles from the network fee oracle.
     pub async fn get_fee_stats(&self) -> SentinelResult<FeePercentiles> {
         let result: serde_json::Value = self
